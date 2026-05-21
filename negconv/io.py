@@ -34,36 +34,23 @@ def _read_icc_gamma(icc: bytes) -> float | None:
 def read_raw(path: str | Path) -> np.ndarray:
     """Read a RAW file and return linear float32 array shaped (H, W, 3).
 
-    Uses rawpy with: output_bps=16, gamma=(1,1), no_auto_bright=True,
-    use_camera_wb=True, ColorSpace.sRGB. RAW data is already linear —
-    no degamma needed.
+    Uses rawpy with unity WB (user_wb=[1,1,1,1]) and raw color space.
+    No white balance, no color matrix — raw sensor proportions preserved.
+    Stage 1 (divide by Dmin) handles channel normalization.
     """
     import rawpy
-    import sys
 
     with rawpy.imread(str(path)) as raw:
         rgb = raw.postprocess(
             output_bps=16,
             gamma=(1, 1),
             no_auto_bright=True,
-            use_camera_wb=True,
+            use_camera_wb=False,
+            use_auto_wb=False,
+            user_wb=[1, 1, 1, 1],
+            output_color=rawpy.ColorSpace.raw,
         )
-    img = rgb.astype(np.float32) / 65535.0
-
-    # Heuristic: if the image is nearly black, re-process with auto-brightness.
-    # Some camera/scanner combinations produce very dark output without it.
-    if img.mean() < 0.08:
-        print("warning: low signal detected in RAW, enabling auto-brightness", file=sys.stderr)
-        with rawpy.imread(str(path)) as raw:
-            rgb = raw.postprocess(
-                output_bps=16,
-                gamma=(1, 1),
-                no_auto_bright=False,
-                use_camera_wb=True,
-            )
-        img = rgb.astype(np.float32) / 65535.0
-
-    return img
+    return rgb.astype(np.float32) / 65535.0
 
 
 def read_tiff(path: str | Path, linearize: bool = True) -> np.ndarray:

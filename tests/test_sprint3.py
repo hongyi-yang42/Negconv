@@ -2,6 +2,7 @@
 
 import json
 import os
+import sys
 import tempfile
 
 import numpy as np
@@ -163,7 +164,7 @@ class TestBatchMode:
             # Run batch
             import subprocess
             result = subprocess.run(
-                ["python", "-m", "negconv", in_dir, "-o", out_dir],
+                [sys.executable, "-m", "negconv", in_dir, "-o", out_dir],
                 capture_output=True, text=True,
             )
             assert result.returncode == 0
@@ -189,7 +190,7 @@ class TestBatchMode:
 
             import subprocess
             subprocess.run(
-                ["python", "-m", "negconv", in_dir, "-o", out_dir],
+                [sys.executable, "-m", "negconv", in_dir, "-o", out_dir],
                 capture_output=True,
             )
 
@@ -210,7 +211,7 @@ class TestBatchMode:
 
             import subprocess
             result = subprocess.run(
-                ["python", "-m", "negconv", in_dir, "-o", out_dir, "--gamma", "3.0"],
+                [sys.executable, "-m", "negconv", in_dir, "-o", out_dir, "--gamma", "3.0"],
                 capture_output=True, text=True,
             )
             assert result.returncode == 0

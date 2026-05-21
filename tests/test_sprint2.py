@@ -44,15 +44,23 @@ class TestDetectDmin:
         assert dmin is None
 
     def test_detects_border_even_if_darker_than_interior(self):
-        """Camera scans: border darker overall but has bright film base."""
+        """Camera scans: border darker overall but still valid film base (above 0.05 max)."""
         img = _make_negative_with_border(
-            border_rgb=(0.04, 0.01, 0.003),
-            interior_rgb=(0.05, 0.01, 0.003),
+            border_rgb=(0.10, 0.03, 0.01),
+            interior_rgb=(0.15, 0.04, 0.01),
         )
         dmin = detect_dmin(img)
-        # This IS a valid film border (R > G > B with spread)
         assert dmin is not None
-        np.testing.assert_allclose(dmin, [0.04, 0.01, 0.003], atol=0.002)
+        np.testing.assert_allclose(dmin, [0.10, 0.03, 0.01], atol=0.002)
+
+    def test_returns_none_for_film_holder_black_border(self):
+        """Camera scans with film holder (black edges) → None with warning."""
+        img = _make_negative_with_border(
+            border_rgb=(0.01, 0.005, 0.002),
+            interior_rgb=(0.10, 0.03, 0.01),
+        )
+        dmin = detect_dmin(img)
+        assert dmin is None
 
     def test_different_border_width(self):
         """Should work with different border fractions."""

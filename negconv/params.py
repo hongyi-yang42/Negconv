@@ -79,6 +79,15 @@ def detect_dmin(img: np.ndarray, border_frac: float = 0.05) -> np.ndarray | None
     border = np.concatenate([top.reshape(-1, 3), bottom.reshape(-1, 3),
                              left.reshape(-1, 3), right.reshape(-1, 3)], axis=0)
 
+    # Camera scans have a film holder (pure black) at the edges, not film base.
+    # If even the brightest channel is very dark, it's a film holder — return None
+    # and let the caller fall back to preset or manual eyedropper.
+    border_max = float(np.max(border))
+    if border_max < 0.05:
+        print("warning: border too dark (film holder?), cannot auto-detect Dmin; "
+              "using preset — use GUI eyedropper for camera scans", file=sys.stderr)
+        return None
+
     # Per-channel: take the top 5% brightest pixels and average them
     per_channel = []
     for c in range(3):
