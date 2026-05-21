@@ -11,6 +11,8 @@ dependencies = [
     "numpy",
     "rawpy",
     "tifffile",
+    "flask",
+    "pillow",
 ]
 
 [project.optional-dependencies]

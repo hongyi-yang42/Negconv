@@ -20,3 +20,9 @@ sRGB matrix WITHOUT WB was tested and FAILED (crushes R channel to ~0).
 the edges. Camera scans have a film holder (pure black) at the edges instead.
 The function now rejects borders with max channel < 0.05 and falls back to preset.
 Manual Dmin sampling via GUI eyedropper (Sprint 4) is the solution for camera scans.
+
+## GUI architecture (Sprint 4)
+Web-based: Flask + vanilla JS + HTML canvas. User develops over SSH
+(Windows → Mac Mini), so native GUI frameworks won't work. Flask serves
+at http://0.0.0.0:5000, user opens browser on Windows machine.
+Do NOT use dearpygui, PyQt, or any framework requiring a local display.
