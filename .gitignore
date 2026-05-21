@@ -10,4 +10,5 @@ tests/fixtures/*.tif
 tests/fixtures/*.NEF
 tests/fixtures/*.CR2
 tests/fixtures/*.CR3
+tests/fixtures/*.ARW
 tests/fixtures/*.png
