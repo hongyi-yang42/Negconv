@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "negconv"
+version = "0.1.0"
+description = "Cineon film negative inversion pipeline"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "rawpy",
+    "tifffile",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["negconv*"]

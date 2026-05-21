@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+tests/fixtures/*.tif
+tests/fixtures/*.tif
+tests/fixtures/*.NEF
+tests/fixtures/*.CR2
+tests/fixtures/*.CR3
+tests/fixtures/*.png
