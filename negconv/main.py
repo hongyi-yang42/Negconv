@@ -64,6 +64,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Output TIFF data type (default: uint16)",
     )
 
+    # GUI mode
+    p.add_argument(
+        "--gui", action="store_true",
+        help="Launch web GUI (Flask)",
+    )
+    p.add_argument(
+        "--port", type=int, default=5000,
+        help="Port for GUI mode (default: 5000)",
+    )
+
     return p
 
 
@@ -150,6 +160,11 @@ def _collect_inputs(input_path: str) -> list[str]:
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+
+    if args.gui:
+        from .gui import run_gui
+        run_gui(port=args.port)
+        return
 
     input_path = Path(args.input)
     output_path = Path(args.output)
