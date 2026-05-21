@@ -9,19 +9,26 @@
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #1a1a1a; color: #ddd; display: flex; height: 100vh; overflow: hidden; }
 
 /* Viewer area */
-#viewer { flex: 1; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; background: #111; }
-#viewer-img { max-width: 100%; max-height: 100%; transform-origin: 0 0; }
+#viewer { flex: 1; display: flex; align-items: center; justify-content: center; position: relative; overflow: hidden; background: #111; min-width: 200px; }
+#viewer-img { position: absolute; transform-origin: 0 0; }
 #viewer img { display: block; }
 #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%); font-size: 1.2em; display: none; }
 #loading.active { display: block; }
 
+/* Resize handle */
+#resize-handle { width: 6px; cursor: col-resize; background: #333; flex-shrink: 0; transition: background 0.15s; }
+#resize-handle:hover, #resize-handle.active { background: #2a6; }
+
 /* Sidebar */
-#sidebar { width: 320px; background: #222; border-left: 1px solid #333; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+#sidebar { width: 280px; min-width: 200px; max-width: 500px; background: #222; border-left: 1px solid #333; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; flex-shrink: 0; }
 #sidebar h2 { font-size: 1em; color: #999; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #333; padding-bottom: 4px; }
-#sidebar label { display: flex; justify-content: space-between; align-items: center; font-size: 0.85em; }
-#sidebar input[type="range"] { width: 140px; }
-#sidebar input[type="number"] { width: 70px; background: #333; border: 1px solid #444; color: #ddd; padding: 2px 4px; border-radius: 3px; font-size: 0.85em; }
-#sidebar .val { font-variant-numeric: tabular-nums; min-width: 50px; text-align: right; color: #aaa; font-size: 0.85em; }
+#sidebar label { display: flex; align-items: center; gap: 6px; font-size: 0.85em; }
+#sidebar label .lbl { min-width: 56px; cursor: pointer; user-select: none; }
+#sidebar label .lbl:hover { color: #2a6; }
+#sidebar input[type="range"] { flex: 1; min-width: 60px; }
+#sidebar input[type="number"] { width: 60px; background: #333; border: 1px solid #444; color: #ddd; padding: 2px 4px; border-radius: 3px; font-size: 0.85em; font-variant-numeric: tabular-nums; text-align: right; }
+#sidebar input[type="number"]:focus { border-color: #2a6; outline: none; }
+#sidebar input[type="number"].readonly-dmin { opacity: 0.7; cursor: default; }
 .btn { padding: 8px 14px; border: 1px solid #555; background: #333; color: #ddd; border-radius: 4px; cursor: pointer; font-size: 0.9em; }
 .btn:hover { background: #444; }
 .btn-primary { background: #2a6; border-color: #2a6; }
@@ -29,10 +36,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 .btn-active { background: #c63; border-color: #c63; }
 #file-row { display: flex; gap: 6px; }
 #file-row input { flex: 1; background: #333; border: 1px solid #444; color: #ddd; padding: 6px 8px; border-radius: 3px; font-size: 0.9em; }
-#status { font-size: 0.8em; color: #888; line-height: 1.5; }
+#status { font-size: 0.8em; color: #888; line-height: 1.5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .preset-row { display: flex; gap: 6px; }
 .preset-row .btn { flex: 1; text-align: center; }
 .section { display: flex; flex-direction: column; gap: 6px; }
+.lbl[title] { text-decoration: underline dotted; text-decoration-color: #555; }
 </style>
 </head>
 <body>
@@ -44,6 +52,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   </div>
 </div>
 
+<div id="resize-handle"></div>
+
 <div id="sidebar">
 
   <!-- File load -->
@@ -52,6 +62,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <div id="file-row">
       <input id="filepath" type="text" placeholder="/path/to/scan.ARW" spellcheck="false">
       <button class="btn btn-primary" id="btn-load">Load</button>
+      <button class="btn" id="btn-clear">Clear</button>
     </div>
     <div id="status">No image loaded</div>
   </div>
@@ -64,9 +75,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
       <span style="font-size:0.85em;">Click film base area</span>
     </div>
     <div style="display:flex;gap:8px;margin-top:4px;">
-      <label>R <input type="number" id="dmin-r" step="0.001" min="0.01" max="2.0" value="" readonly></label>
-      <label>G <input type="number" id="dmin-g" step="0.001" min="0.01" max="2.0" value="" readonly></label>
-      <label>B <input type="number" id="dmin-b" step="0.001" min="0.01" max="2.0" value="" readonly></label>
+      <label>R <input type="number" id="dmin-r" class="readonly-dmin" step="0.001" min="0.01" max="2.0" value="" readonly></label>
+      <label>G <input type="number" id="dmin-g" class="readonly-dmin" step="0.001" min="0.01" max="2.0" value="" readonly></label>
+      <label>B <input type="number" id="dmin-b" class="readonly-dmin" step="0.001" min="0.01" max="2.0" value="" readonly></label>
     </div>
   </div>
 
@@ -87,26 +98,29 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <!-- Parameters -->
   <div class="section">
     <h2>Parameters</h2>
-    <label>Dmax <input type="range" id="sl-dmax" min="0.5" max="4.0" step="0.01" value="1.6"> <span class="val" id="v-dmax">1.60</span></label>
-    <label>Gamma <input type="range" id="sl-gamma" min="1.0" max="8.0" step="0.1" value="4.0"> <span class="val" id="v-gamma">4.0</span></label>
-    <label>Exposure <input type="range" id="sl-exposure" min="0.1" max="2.0" step="0.01" value="0.92"> <span class="val" id="v-exposure">0.92</span></label>
-    <label>Black <input type="range" id="sl-black" min="0.0" max="0.5" step="0.01" value="0.08"> <span class="val" id="v-black">0.08</span></label>
-    <label>Soft clip <input type="range" id="sl-softclip" min="0.0" max="1.0" step="0.01" value="0.75"> <span class="val" id="v-softclip">0.75</span></label>
-    <label>Offset <input type="range" id="sl-offset" min="-0.5" max="0.5" step="0.01" value="-0.05"> <span class="val" id="v-offset">-0.05</span></label>
+    <label><span class="lbl" data-target="sl-dmax" title="Film dynamic range in optical density units. Controls how far the density-to-print mapping stretches. Typical: 1.5–2.5 (B&W up to 3.0). Higher = more contrast. Range: 0.5–4.0. Alt+click to reset.">Dmax</span> <input type="range" id="sl-dmax" min="0.5" max="4.0" step="0.01" value="1.6" data-default="1.6"> <input type="number" id="num-dmax" min="0.5" max="4.0" step="0.01" value="1.60"></label>
+    <label><span class="lbl" data-target="sl-gamma" title="Paper grade / contrast. Simulates photographic paper gamma. Higher = harder paper (more contrast). Color film: 3–5, B&W: 4–6. Range: 1.0–8.0. Alt+click to reset.">Gamma</span> <input type="range" id="sl-gamma" min="1.0" max="8.0" step="0.1" value="4.0" data-default="4.0"> <input type="number" id="num-gamma" min="1.0" max="8.0" step="0.1" value="4.0"></label>
+    <label><span class="lbl" data-target="sl-exposure" title="Paper exposure strength. Controls overall brightness of the print. Increase to brighten shadows, decrease to deepen them. Default 0.92 for typical film. Range: 0.1–2.0. Alt+click to reset.">Exposure</span> <input type="range" id="sl-exposure" min="0.1" max="2.0" step="0.01" value="0.92" data-default="0.9245"> <input type="number" id="num-exposure" min="0.1" max="2.0" step="0.01" value="0.92"></label>
+    <label><span class="lbl" data-target="sl-black" title="Paper black point offset. Sets the minimum density (D-min) of the simulated paper. Increase to lift shadows, decrease for deeper blacks. Default 0.08. Range: 0.0–0.5. Alt+click to reset.">Black</span> <input type="range" id="sl-black" min="0.0" max="0.5" step="0.01" value="0.08" data-default="0.0755"> <input type="number" id="num-black" min="0.0" max="0.5" step="0.01" value="0.08"></label>
+    <label><span class="lbl" data-target="sl-softclip" title="Highlight roll-off. Prevents harsh clipping of bright highlights. 1.0 = no soft clip, lower = earlier/gentler rolloff. Default 0.75. Range: 0.0–1.0. Alt+click to reset.">Soft clip</span> <input type="range" id="sl-softclip" min="0.0" max="1.0" step="0.01" value="0.75" data-default="0.75"> <input type="number" id="num-softclip" min="0.0" max="1.0" step="0.01" value="0.75"></label>
+    <label><span class="lbl" data-target="sl-offset" title="Density offset in log space. Shifts the entire density curve up or down. Primarily for scanner black-point calibration — usually left at -0.05. Range: -0.5–0.5. Alt+click to reset.">Offset</span> <input type="range" id="sl-offset" min="-0.5" max="0.5" step="0.01" value="-0.05" data-default="-0.05"> <input type="number" id="num-offset" min="-0.5" max="0.5" step="0.01" value="-0.05"></label>
   </div>
 
   <div class="section">
     <h2>White Balance High</h2>
-    <label>R <input type="range" id="sl-wbh-r" min="0.5" max="2.0" step="0.01" value="1.0"> <span class="val" id="v-wbh-r">1.00</span></label>
-    <label>G <input type="range" id="sl-wbh-g" min="0.5" max="2.0" step="0.01" value="1.0"> <span class="val" id="v-wbh-g">1.00</span></label>
-    <label>B <input type="range" id="sl-wbh-b" min="0.5" max="2.0" step="0.01" value="1.0"> <span class="val" id="v-wbh-b">1.00</span></label>
+    <label><span class="lbl" data-target="sl-wbh-r" title="Highlight white balance — Red channel. Multiplier for the red channel in highlight densities. 1.0 = neutral. Adjust to correct color casts in bright areas. Range: 0.5–2.0. Alt+click to reset.">R</span> <input type="range" id="sl-wbh-r" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-r" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+    <label><span class="lbl" data-target="sl-wbh-g" title="Highlight white balance — Green channel. Multiplier for the green channel in highlight densities. 1.0 = neutral. Range: 0.5–2.0. Alt+click to reset.">G</span> <input type="range" id="sl-wbh-g" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-g" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+    <label><span class="lbl" data-target="sl-wbh-b" title="Highlight white balance — Blue channel. Multiplier for the blue channel in highlight densities. 1.0 = neutral. Range: 0.5–2.0. Alt+click to reset.">B</span> <input type="range" id="sl-wbh-b" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-b" min="0.5" max="2.0" step="0.01" value="1.00"></label>
   </div>
 
   <div class="section">
     <h2>White Balance Low</h2>
-    <label>R <input type="range" id="sl-wbl-r" min="0.5" max="2.0" step="0.01" value="1.0"> <span class="val" id="v-wbl-r">1.00</span></label>
-    <label>G <input type="range" id="sl-wbl-g" min="0.5" max="2.0" step="0.01" value="1.0"> <span class="val" id="v-wbl-g">1.00</span></label>
-    <label>B <input type="range" id="sl-wbl-b" min="0.5" max="2.0" step="0.01" value="1.0"> <span class="val" id="v-wbl-b">1.00</span></label>
+    <label><span class="lbl" data-target="sl-wbl-r" title="Shadow white balance — Red channel. Multiplier for the red channel in shadow densities. Corrects color casts in dark areas. Range: 0.5–2.0. Alt+click to reset.">R</span> <input type="range" id="sl-wbl-r" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-r" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+    <label><span class="lbl" data-target="sl-wbl-g" title="Shadow white balance — Green channel. Multiplier for the green channel in shadow densities. Range: 0.5–2.0. Alt+click to reset.">G</span> <input type="range" id="sl-wbl-g" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-g" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+    <label><span class="lbl" data-target="sl-wbl-b" title="Shadow white balance — Blue channel. Multiplier for the blue channel in shadow densities. Range: 0.5–2.0. Alt+click to reset.">B</span> <input type="range" id="sl-wbl-b" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-b" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+  </div>
+    <label><span class="lbl" data-target="sl-wbl-g">G</span> <input type="range" id="sl-wbl-g" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-g" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+    <label><span class="lbl" data-target="sl-wbl-b">B</span> <input type="range" id="sl-wbl-b" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-b" min="0.5" max="2.0" step="0.01" value="1.00"></label>
   </div>
 
   <!-- Export -->
@@ -118,6 +132,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     </div>
   </div>
 
+  <div style="font-size:0.7em;color:#555;margin-top:8px;">Alt+click label to reset</div>
 </div>
 
 <script>
@@ -125,6 +140,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 let pickingDmin = false;
 let previewWidth = 0;
 let previewHeight = 0;
+let currentFilename = "";
+let currentDims = [0, 0];
 let zoomLevel = 1;
 let panX = 0, panY = 0;
 let isPanning = false;
@@ -135,37 +152,63 @@ const $ = id => document.getElementById(id);
 const img = $("preview");
 const viewerImg = $("viewer-img");
 
+// Slider↔number input pairs
+const sliderPairs = [
+  { sl: "sl-dmax",     num: "num-dmax" },
+  { sl: "sl-gamma",    num: "num-gamma" },
+  { sl: "sl-exposure", num: "num-exposure" },
+  { sl: "sl-black",    num: "num-black" },
+  { sl: "sl-softclip", num: "num-softclip" },
+  { sl: "sl-offset",   num: "num-offset" },
+  { sl: "sl-wbh-r",    num: "num-wbh-r" },
+  { sl: "sl-wbh-g",    num: "num-wbh-g" },
+  { sl: "sl-wbh-b",    num: "num-wbh-b" },
+  { sl: "sl-wbl-r",    num: "num-wbl-r" },
+  { sl: "sl-wbl-g",    num: "num-wbl-g" },
+  { sl: "sl-wbl-b",    num: "num-wbl-b" },
+];
+
 // Loading indicator
 function setLoading(on) {
   $("loading").classList.toggle("active", on);
 }
 
-// Update slider displays
-const sliderMap = {
-  "sl-dmax":     { val: "v-dmax",     key: "d_max",    fmt: v => v.toFixed(2) },
-  "sl-gamma":    { val: "v-gamma",    key: "gamma",    fmt: v => v.toFixed(1) },
-  "sl-exposure": { val: "v-exposure", key: "exposure", fmt: v => v.toFixed(2) },
-  "sl-black":    { val: "v-black",    key: "black",    fmt: v => v.toFixed(2) },
-  "sl-softclip": { val: "v-softclip", key: "soft_clip",fmt: v => v.toFixed(2) },
-  "sl-offset":   { val: "v-offset",   key: "offset",   fmt: v => v.toFixed(2) },
-  "sl-wbh-r":    { val: "v-wbh-r",    key: null,       fmt: v => v.toFixed(2) },
-  "sl-wbh-g":    { val: "v-wbh-g",    key: null,       fmt: v => v.toFixed(2) },
-  "sl-wbh-b":    { val: "v-wbh-b",    key: null,       fmt: v => v.toFixed(2) },
-  "sl-wbl-r":    { val: "v-wbl-r",    key: null,       fmt: v => v.toFixed(2) },
-  "sl-wbl-g":    { val: "v-wbl-g",    key: null,       fmt: v => v.toFixed(2) },
-  "sl-wbl-b":    { val: "v-wbl-b",    key: null,       fmt: v => v.toFixed(2) },
-};
+// Single-line status
+function updateStatus() {
+  const dminR = $("dmin-r").value;
+  const dminG = $("dmin-g").value;
+  const dminB = $("dmin-b").value;
+  let text = currentFilename ? `${currentFilename}  ${currentDims[0]}x${currentDims[1]}` : "No image loaded";
+  if (dminR) text += ` | Dmin: R=${parseFloat(dminR).toFixed(4)} G=${parseFloat(dminG).toFixed(4)} B=${parseFloat(dminB).toFixed(4)}`;
+  $("status").textContent = text;
+}
 
-// Gather current params from sliders
+// Sync slider → number input
+function syncSlToNum(slId, numId) {
+  const sl = $(slId);
+  const num = $(numId);
+  num.value = parseFloat(sl.value).toFixed(sl.step.includes(".0") ? 1 : 2);
+}
+
+// Sync number input → slider
+function syncNumToSl(numId, slId) {
+  const num = $(numId);
+  const sl = $(slId);
+  const v = parseFloat(num.value);
+  if (isNaN(v)) return;
+  sl.value = v;
+}
+
+// Gather current params
 function gatherParams() {
   return {
-    d_max:    parseFloat($("sl-dmax").value),
-    gamma:    parseFloat($("sl-gamma").value),
-    exposure: parseFloat($("sl-exposure").value),
-    black:    parseFloat($("sl-black").value),
-    soft_clip:parseFloat($("sl-softclip").value),
-    offset:   parseFloat($("sl-offset").value),
-    wb_high:  [
+    d_max:     parseFloat($("sl-dmax").value),
+    gamma:     parseFloat($("sl-gamma").value),
+    exposure:  parseFloat($("sl-exposure").value),
+    black:     parseFloat($("sl-black").value),
+    soft_clip: parseFloat($("sl-softclip").value),
+    offset:    parseFloat($("sl-offset").value),
+    wb_high: [
       parseFloat($("sl-wbh-r").value),
       parseFloat($("sl-wbh-g").value),
       parseFloat($("sl-wbh-b").value),
@@ -187,18 +230,50 @@ function pushParams() {
   }).then(() => doInvert());
 }
 
-// Debounced param push
-function onSliderChange() {
-  const info = sliderMap[this.id];
-  if (info) $(info.val).textContent = info.fmt(parseFloat(this.value));
+function onParamChange() {
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(pushParams, 300);
 }
 
-// Bind all sliders
-Object.keys(sliderMap).forEach(id => {
-  const el = $(id);
-  if (el) el.addEventListener("input", onSliderChange);
+// Bind slider ↔ number pairs
+sliderPairs.forEach(pair => {
+  const sl = $(pair.sl);
+  const num = $(pair.num);
+
+  // Slider input → update number display → debounce push
+  sl.addEventListener("input", () => {
+    syncSlToNum(pair.sl, pair.num);
+    onParamChange();
+  });
+
+  // Number input → update slider → debounce push
+  num.addEventListener("input", () => {
+    syncNumToSl(pair.num, pair.sl);
+    onParamChange();
+  });
+
+  // Enter in number input → commit immediately
+  num.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      num.blur();
+      clearTimeout(debounceTimer);
+      pushParams();
+    }
+  });
+});
+
+// Alt+click label → reset slider to default
+document.querySelectorAll(".lbl[data-target]").forEach(lbl => {
+  lbl.addEventListener("click", (e) => {
+    if (!e.altKey) return;
+    const slId = lbl.dataset.target;
+    const sl = $(slId);
+    if (!sl || sl.dataset.default === undefined) return;
+    sl.value = sl.dataset.default;
+    const pair = sliderPairs.find(p => p.sl === slId);
+    if (pair) syncSlToNum(pair.sl, pair.num);
+    onParamChange();
+  });
 });
 
 // Update UI from server params
@@ -208,21 +283,31 @@ function updateUI(params) {
     $("dmin-g").value = params.dmin[1].toFixed(4);
     $("dmin-b").value = params.dmin[2].toFixed(4);
   }
-  $("sl-dmax").value = params.d_max;     $("v-dmax").textContent = params.d_max.toFixed(2);
-  $("sl-gamma").value = params.gamma;    $("v-gamma").textContent = params.gamma.toFixed(1);
-  $("sl-exposure").value = params.exposure; $("v-exposure").textContent = params.exposure.toFixed(2);
-  $("sl-black").value = params.black;    $("v-black").textContent = params.black.toFixed(2);
-  $("sl-softclip").value = params.soft_clip; $("v-softclip").textContent = params.soft_clip.toFixed(2);
-  $("sl-offset").value = params.offset;  $("v-offset").textContent = params.offset.toFixed(2);
+  const mapping = {
+    "sl-dmax": params.d_max, "sl-gamma": params.gamma,
+    "sl-exposure": params.exposure, "sl-black": params.black,
+    "sl-softclip": params.soft_clip, "sl-offset": params.offset,
+  };
+  for (const [slId, val] of Object.entries(mapping)) {
+    if (val !== undefined) {
+      $(slId).value = val;
+      const pair = sliderPairs.find(p => p.sl === slId);
+      if (pair) syncSlToNum(pair.sl, pair.num);
+    }
+  }
   if (params.wb_high) {
-    $("sl-wbh-r").value = params.wb_high[0]; $("v-wbh-r").textContent = params.wb_high[0].toFixed(2);
-    $("sl-wbh-g").value = params.wb_high[1]; $("v-wbh-g").textContent = params.wb_high[1].toFixed(2);
-    $("sl-wbh-b").value = params.wb_high[2]; $("v-wbh-b").textContent = params.wb_high[2].toFixed(2);
+    ["sl-wbh-r","sl-wbh-g","sl-wbh-b"].forEach((id, i) => {
+      $(id).value = params.wb_high[i];
+      const pair = sliderPairs.find(p => p.sl === id);
+      if (pair) syncSlToNum(pair.sl, pair.num);
+    });
   }
   if (params.wb_low) {
-    $("sl-wbl-r").value = params.wb_low[0]; $("v-wbl-r").textContent = params.wb_low[0].toFixed(2);
-    $("sl-wbl-g").value = params.wb_low[1]; $("v-wbl-g").textContent = params.wb_low[1].toFixed(2);
-    $("sl-wbl-b").value = params.wb_low[2]; $("v-wbl-b").textContent = params.wb_low[2].toFixed(2);
+    ["sl-wbl-r","sl-wbl-g","sl-wbl-b"].forEach((id, i) => {
+      $(id).value = params.wb_low[i];
+      const pair = sliderPairs.find(p => p.sl === id);
+      if (pair) syncSlToNum(pair.sl, pair.num);
+    });
   }
 }
 
@@ -246,9 +331,11 @@ $("btn-load").addEventListener("click", () => {
       previewWidth = data.preview_dims[0];
       previewHeight = data.preview_dims[1];
     }
+    currentFilename = data.filename;
+    currentDims = data.dims;
     updateUI(data.params);
-    $("status").textContent = `${data.filename}  ${data.dims[0]}x${data.dims[1]}`;
-    resetZoom();
+    updateStatus();
+    fitToWindow();
   })
   .catch(e => { setLoading(false); alert("Load failed: " + e); });
 });
@@ -277,11 +364,6 @@ $("btn-pick").addEventListener("click", () => {
 
 img.addEventListener("click", (e) => {
   if (!pickingDmin) return;
-
-  // Account for CSS transform (zoom + pan) when mapping click to image pixel coords.
-  // The image is displayed at its natural size inside viewer-img, which has a CSS transform.
-  // e.offsetX/offsetY are relative to the target element in its *transformed* coordinate space,
-  // but we need coords relative to the original (un-transformed) image.
   const rect = img.getBoundingClientRect();
   const scaleX = previewWidth / rect.width;
   const scaleY = previewHeight / rect.height;
@@ -300,7 +382,7 @@ img.addEventListener("click", (e) => {
     if (data.error) { alert(data.error); return; }
     updateUI(data.params);
     img.src = "/api/preview/result?" + Date.now();
-    $("status").textContent += `\nDmin: R=${data.dmin[0].toFixed(4)} G=${data.dmin[1].toFixed(4)} B=${data.dmin[2].toFixed(4)}`;
+    updateStatus();
   })
   .catch(e => { setLoading(false); alert("Pick failed: " + e); });
 });
@@ -341,15 +423,22 @@ function doExport(dtype) {
 $("btn-export-16").addEventListener("click", () => doExport("uint16"));
 $("btn-export-32").addEventListener("click", () => doExport("float32"));
 
-// Zoom & Pan
+// ---- Zoom & Pan ----
 function applyTransform() {
   viewerImg.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
 }
-function resetZoom() {
-  zoomLevel = 1;
-  panX = 0;
-  panY = 0;
+function fitToWindow() {
+  panX = 0; panY = 0;
+  if (!previewWidth || !previewHeight) { zoomLevel = 1; applyTransform(); return; }
+  const vw = $("viewer").clientWidth;
+  const vh = $("viewer").clientHeight;
+  zoomLevel = Math.min(vw / previewWidth, vh / previewHeight);
+  panX = (vw - previewWidth * zoomLevel) / 2;
+  panY = (vh - previewHeight * zoomLevel) / 2;
   applyTransform();
+}
+function resetZoom() {
+  zoomLevel = 1; panX = 0; panY = 0; applyTransform();
 }
 
 $("viewer").addEventListener("wheel", (e) => {
@@ -362,8 +451,7 @@ $("viewer").addEventListener("wheel", (e) => {
 $("viewer").addEventListener("mousedown", (e) => {
   if (e.button === 0 && !pickingDmin) {
     isPanning = true;
-    lastMouseX = e.clientX;
-    lastMouseY = e.clientY;
+    lastMouseX = e.clientX; lastMouseY = e.clientY;
     img.style.cursor = "grabbing";
   }
 });
@@ -371,8 +459,7 @@ window.addEventListener("mousemove", (e) => {
   if (!isPanning) return;
   panX += e.clientX - lastMouseX;
   panY += e.clientY - lastMouseY;
-  lastMouseX = e.clientX;
-  lastMouseY = e.clientY;
+  lastMouseX = e.clientX; lastMouseY = e.clientY;
   applyTransform();
 });
 window.addEventListener("mouseup", () => {
@@ -380,6 +467,48 @@ window.addEventListener("mouseup", () => {
     isPanning = false;
     img.style.cursor = pickingDmin ? "crosshair" : "default";
   }
+});
+
+// ---- Draggable sidebar resize handle ----
+const handle = $("resize-handle");
+const sidebar = $("sidebar");
+let isResizing = false;
+
+handle.addEventListener("mousedown", (e) => {
+  e.preventDefault();
+  isResizing = true;
+  handle.classList.add("active");
+  document.body.style.cursor = "col-resize";
+  document.body.style.userSelect = "none";
+});
+window.addEventListener("mousemove", (e) => {
+  if (!isResizing) return;
+  const newWidth = window.innerWidth - e.clientX;
+  const clamped = Math.max(200, Math.min(500, newWidth));
+  sidebar.style.width = clamped + "px";
+});
+window.addEventListener("mouseup", () => {
+  if (isResizing) {
+    isResizing = false;
+    handle.classList.remove("active");
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+  }
+});
+
+// ---- Clear button ----
+$("btn-clear").addEventListener("click", () => {
+  img.style.display = "none";
+  img.src = "";
+  previewWidth = 0; previewHeight = 0;
+  currentFilename = ""; currentDims = [0, 0];
+  pickingDmin = false;
+  $("btn-pick").classList.remove("btn-active");
+  $("filepath").value = "";
+  $("dmin-r").value = ""; $("dmin-g").value = ""; $("dmin-b").value = "";
+  updateStatus();
+  resetZoom();
+  fetch("/api/clear", {method: "POST"}).catch(() => {});
 });
 
 // Enter key in filepath input triggers load

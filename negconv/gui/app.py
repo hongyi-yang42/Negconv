@@ -182,6 +182,16 @@ def create_app() -> Flask:
             return jsonify({"error": f"Unknown preset: {name}"}), 400
         return jsonify(_params_to_dict(state.params))
 
+    @app.route("/api/clear", methods=["POST"])
+    def api_clear():
+        state.original_img = None
+        state.params = NegconvParams.color_film()
+        state.file_path = ""
+        state.orig_preview = b""
+        state.result_preview = b""
+        state.preview_dims = (0, 0)
+        return jsonify({"ok": True})
+
     @app.route("/api/export", methods=["POST"])
     def api_export():
         if state.original_img is None:
@@ -207,7 +217,6 @@ def create_app() -> Flask:
                 mimetype="image/tiff",
             )
         finally:
-            # Clean up after response is sent
             pass
 
     return app

@@ -23,8 +23,8 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="negconv",
         description="Cineon film negative inversion pipeline",
     )
-    p.add_argument("input", help="Input file or directory")
-    p.add_argument("-o", "--output", required=True, help="Output file or directory")
+    p.add_argument("input", nargs="?", help="Input file or directory")
+    p.add_argument("-o", "--output", help="Output file or directory")
     p.add_argument("--version", action="version", version=f"negconv {__version__}")
 
     # Preset
@@ -165,6 +165,11 @@ def main() -> None:
         from .gui import run_gui
         run_gui(port=args.port)
         return
+
+    if not args.input:
+        parser.error("input is required when not using --gui")
+    if not args.output:
+        parser.error("-o/--output is required when not using --gui")
 
     input_path = Path(args.input)
     output_path = Path(args.output)
