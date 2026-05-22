@@ -245,6 +245,20 @@ def create_app() -> Flask:
             "params": _params_to_dict(state.params, state.crop_rect),
         })
 
+    @app.route("/api/histogram")
+    def api_histogram():
+        if not state.result_preview:
+            return jsonify({"error": "No result"}), 404
+        from PIL import Image as PILImage
+        import io as _io
+        pil = PILImage.open(_io.BytesIO(state.result_preview))
+        arr = np.array(pil)
+        hist = {}
+        for i, ch in enumerate(("r", "g", "b")):
+            counts, _ = np.histogram(arr[:, :, i], bins=256, range=(0, 256))
+            hist[ch] = counts.tolist()
+        return jsonify(hist)
+
     @app.route("/api/export", methods=["POST"])
     def api_export():
         if state.original_img is None:

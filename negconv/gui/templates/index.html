@@ -25,6 +25,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 #crop-border { position: absolute; border: 2px dashed rgba(255,255,255,0.8); pointer-events: none; }
 #crop-drawing { position: absolute; border: 2px dashed #c63; background: rgba(200,100,50,0.1); display: none; }
 
+/* Histogram */
+#histogram-wrap { position: absolute; bottom: 12px; left: 12px; display: none; background: rgba(0,0,0,0.7); border-radius: 4px; padding: 4px; }
+#histogram-wrap.visible { display: block; }
+#histogram-canvas { display: block; }
+
 /* Sidebar */
 #sidebar { width: 280px; min-width: 200px; max-width: 500px; background: #222; border-left: 1px solid #333; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; flex-shrink: 0; }
 #sidebar h2 { font-size: 1em; color: #999; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #333; padding-bottom: 4px; }
@@ -64,6 +69,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <div id="crop-border"></div>
   </div>
   <div id="crop-drawing"></div>
+  <div id="histogram-wrap">
+    <canvas id="histogram-canvas" width="240" height="120"></canvas>
+  </div>
 </div>
 
 <div id="resize-handle"></div>
@@ -117,6 +125,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <!-- Invert -->
   <div class="section">
     <button class="btn btn-primary" id="btn-invert" style="width:100%">Invert</button>
+    <div style="display:flex;gap:6px;margin-top:4px;">
+      <button class="btn" id="btn-before-after" style="flex:1" title="Toggle between original and inverted (\)">Before/After</button>
+      <button class="btn" id="btn-histogram" style="flex:0" title="Toggle RGB histogram (H)">Hist</button>
+    </div>
   </div>
 
   <!-- Parameters -->
@@ -573,6 +585,100 @@ window.addEventListener("mouseup", (e) => {
   .catch(e => { setLoading(false); alert("Crop failed: " + e); });
 });
 
+// ---- Histogram ----
+let histVisible = false;
+const histCanvas = $("histogram-canvas");
+const histCtx = histCanvas.getContext("2d");
+const histWrap = $("histogram-wrap");
+
+function fetchAndDrawHistogram() {
+  if (!histVisible) return;
+  fetch("/api/histogram")
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) return;
+      drawHistogram(data);
+    })
+    .catch(() => {});
+}
+
+function drawHistogram(data) {
+  const w = histCanvas.width, h = histCanvas.height;
+  histCtx.clearRect(0, 0, w, h);
+
+  const maxVal = Math.max(
+    ...data.r, ...data.g, ...data.b
+  );
+  if (maxVal === 0) return;
+
+  const colors = {r: "rgba(255,80,80,0.6)", g: "rgba(80,255,80,0.6)", b: "rgba(80,130,255,0.6)"};
+
+  for (const ch of ["r", "g", "b"]) {
+    const bins = data[ch];
+    // Log scale for visibility
+    const logBins = bins.map(v => Math.log(v + 1));
+    const logMax = Math.max(...logBins);
+
+    histCtx.beginPath();
+    histCtx.moveTo(0, h);
+    for (let i = 0; i < 256; i++) {
+      const x = (i / 255) * w;
+      const y = h - (logBins[i] / logMax) * (h - 4);
+      histCtx.lineTo(x, y);
+    }
+    histCtx.lineTo(w, h);
+    histCtx.closePath();
+    histCtx.fillStyle = colors[ch];
+    histCtx.fill();
+  }
+}
+
+function toggleHistogram() {
+  histVisible = !histVisible;
+  histWrap.classList.toggle("visible", histVisible);
+  $("btn-histogram").classList.toggle("btn-active", histVisible);
+  if (histVisible) fetchAndDrawHistogram();
+}
+
+$("btn-histogram").addEventListener("click", toggleHistogram);
+
+// Fetch histogram after every preview update
+const origDoInvert = doInvert;
+doInvert = function() {
+  setLoading(true);
+  fetch("/api/invert", {method: "POST"})
+  .then(r => r.json())
+  .then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    img.src = "/api/preview/result?" + Date.now();
+    currentSrcIsOriginal = false;
+    updateUI(data.params);
+    fetchAndDrawHistogram();
+  })
+  .catch(e => { setLoading(false); alert("Invert failed: " + e); });
+};
+
+// ---- Before/After toggle ----
+let currentSrcIsOriginal = false;
+let lastResultSrc = "";
+let lastOrigSrc = "";
+
+function toggleBeforeAfter() {
+  if (!currentFilename) return;
+  if (currentSrcIsOriginal) {
+    if (lastResultSrc) img.src = lastResultSrc;
+    else img.src = "/api/preview/result?" + Date.now();
+    currentSrcIsOriginal = false;
+  } else {
+    lastResultSrc = img.src;
+    img.src = "/api/preview/orig?" + Date.now();
+    currentSrcIsOriginal = true;
+  }
+}
+
+$("btn-before-after").addEventListener("click", toggleBeforeAfter);
+
 // Presets
 $("btn-preset-color").addEventListener("click", () => {
   fetch("/api/preset/color", {method: "POST"})
@@ -703,6 +809,29 @@ $("btn-clear").addEventListener("click", () => {
 // Enter key in filepath input triggers load
 $("filepath").addEventListener("keydown", (e) => {
   if (e.key === "Enter") $("btn-load").click();
+});
+
+// ---- Keyboard shortcuts ----
+document.addEventListener("keydown", (e) => {
+  // Don't fire shortcuts when typing in inputs
+  const tag = e.target.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+
+  if (e.key === "h" || e.key === "H") {
+    toggleHistogram();
+  } else if (e.key === "\\") {
+    toggleBeforeAfter();
+  } else if (e.key === "e" || e.key === "E") {
+    $("btn-pick").click();
+  } else if (e.key === "c" || e.key === "C") {
+    $("btn-crop").click();
+  } else if (e.key === "Escape") {
+    if (pickingDmin) { $("btn-pick").click(); }
+    if (cropMode) { $("btn-crop").click(); }
+  } else if (e.key === " ") {
+    e.preventDefault();
+    fitToWindow();
+  }
 });
 </script>
 </body>

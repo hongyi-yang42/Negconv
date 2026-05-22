@@ -315,3 +315,59 @@ class TestCrop:
         data = resp.get_json()
         assert data["crop_rect"]["x"] == 100
         assert data["crop_rect"]["w"] == 100
+
+
+class TestVisualFeedback:
+    @pytest.fixture
+    def client_with_inverted(self):
+        """Client with a loaded and inverted 200x200 TIFF."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+            data = np.full((200, 200, 3), 30000, dtype=np.uint16)
+            tifffile.imwrite(f.name, data, photometric="rgb")
+            path = f.name
+        client.post("/api/load", json={"path": path})
+        client.post("/api/invert")
+        yield client
+        os.unlink(path)
+
+    def test_histogram_endpoint_returns_256_bins(self, client_with_inverted):
+        """GET /api/histogram returns {r, g, b} each with 256 ints."""
+        resp = client_with_inverted.get("/api/histogram")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        for ch in ("r", "g", "b"):
+            assert ch in data
+            assert len(data[ch]) == 256
+            assert all(isinstance(v, int) for v in data[ch])
+
+    def test_histogram_updates_after_param_change(self, client_with_inverted):
+        """Changing gamma changes histogram values."""
+        resp1 = client_with_inverted.get("/api/histogram")
+        hist1 = resp1.get_json()
+
+        client_with_inverted.post("/api/params", json={"gamma": 8.0})
+        client_with_inverted.post("/api/invert")
+
+        resp2 = client_with_inverted.get("/api/histogram")
+        hist2 = resp2.get_json()
+        # Histograms should differ (gamma change shifts distribution)
+        assert hist1["r"] != hist2["r"]
+
+    def test_original_preview_endpoint(self, client_with_inverted):
+        """GET /api/preview/orig returns JPEG after load."""
+        resp = client_with_inverted.get("/api/preview/orig")
+        assert resp.status_code == 200
+        assert resp.content_type == "image/jpeg"
+
+    def test_before_after_does_not_affect_params(self, client_with_inverted):
+        """Fetching original preview doesn't change params."""
+        resp1 = client_with_inverted.get("/api/params")
+        params1 = resp1.get_json()
+        client_with_inverted.get("/api/preview/orig")
+        resp2 = client_with_inverted.get("/api/params")
+        params2 = resp2.get_json()
+        assert params1["gamma"] == params2["gamma"]
+        assert params1["dmin"] == params2["dmin"]
