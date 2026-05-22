@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import tempfile
@@ -10,7 +11,7 @@ from pathlib import Path
 import numpy as np
 from flask import Flask, jsonify, render_template, request, send_file
 
-from ..io import extract_exif, is_raw, read_image, write_image, write_jpeg, write_heic
+from ..io import apply_orientation, extract_exif, is_raw, read_image, write_image, write_jpeg, write_heic
 from ..params import NegconvParams, auto_detect, save_params, load_params
 from ..pipeline import invert
 from .viewer import make_preview
@@ -29,6 +30,9 @@ class GuiState:
     preview_dims: tuple[int, int] = (0, 0)  # (width, height) of preview image
     crop_rect: dict | None = None  # {"x","y","w","h"} in original coords
     source_exif: bytes | None = None
+    orientation: int = 0      # 0=normal, 1=90°CW, 2=180°, 3=270°CW
+    flip_h: bool = False
+    flip_v: bool = False
 
 
 def _sample_dmin(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
@@ -65,6 +69,26 @@ def _get_pipeline_input(state: GuiState) -> np.ndarray:
     return state.original_img
 
 
+_PIL_ROTATE = {1: 4, 2: 3, 3: 2}  # PIL: 4=ROTATE_270(=90°CW), 3=ROTATE_180, 2=ROTATE_90(=270°CW)
+
+
+def _orient_preview(jpeg_bytes: bytes, state: GuiState) -> bytes:
+    """Apply flip then rotation to preview JPEG bytes. Returns new JPEG bytes."""
+    if state.orientation == 0 and not state.flip_h and not state.flip_v:
+        return jpeg_bytes
+    from PIL import Image as PILImage
+    img = PILImage.open(io.BytesIO(jpeg_bytes))
+    if state.flip_h:
+        img = img.transpose(PILImage.FLIP_LEFT_RIGHT)
+    if state.flip_v:
+        img = img.transpose(PILImage.FLIP_TOP_BOTTOM)
+    if state.orientation in _PIL_ROTATE:
+        img = img.transpose(_PIL_ROTATE[state.orientation])
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
 def _sidecar_path(file_path: str) -> str:
     """Return the sidecar path for a given source file."""
     return str(file_path) + ".negconv.json"
@@ -88,6 +112,9 @@ def _auto_save(state: GuiState) -> bool:
     }
     if state.crop_rect is not None:
         data["crop_rect"] = state.crop_rect
+    data["orientation"] = state.orientation
+    data["flip_h"] = state.flip_h
+    data["flip_v"] = state.flip_v
     Path(sp).parent.mkdir(parents=True, exist_ok=True)
     with open(sp, "w") as f:
         json.dump(data, f, indent=2)
@@ -115,6 +142,9 @@ def _apply_sidecar(state: GuiState, data: dict) -> None:
         if key in data:
             setattr(p, key, np.array(data[key], dtype=np.float32))
     state.crop_rect = data.get("crop_rect", None)
+    state.orientation = data.get("orientation", 0)
+    state.flip_h = data.get("flip_h", False)
+    state.flip_v = data.get("flip_v", False)
 
 
 def _load_recent() -> list[dict]:
@@ -166,6 +196,9 @@ def create_app() -> Flask:
         state.params = auto_detect(img)
         state.crop_rect = None
         state.source_exif = extract_exif(path)
+        state.orientation = 0
+        state.flip_h = False
+        state.flip_v = False
 
         # Auto-load sidecar if present
         sidecar_loaded = False
@@ -195,6 +228,9 @@ def create_app() -> Flask:
             "dims": [h, w],
             "preview_dims": list(state.preview_dims),
             "sidecar_loaded": sidecar_loaded,
+            "orientation": state.orientation,
+            "flip_h": state.flip_h,
+            "flip_v": state.flip_v,
         }
         return jsonify(result)
 
@@ -202,19 +238,15 @@ def create_app() -> Flask:
     def api_preview_orig():
         if not state.orig_preview:
             return "", 404
-        return send_file(
-            __import__("io").BytesIO(state.orig_preview),
-            mimetype="image/jpeg",
-        )
+        data = _orient_preview(state.orig_preview, state)
+        return send_file(io.BytesIO(data), mimetype="image/jpeg")
 
     @app.route("/api/preview/result")
     def api_preview_result():
         if not state.result_preview:
             return "", 404
-        return send_file(
-            __import__("io").BytesIO(state.result_preview),
-            mimetype="image/jpeg",
-        )
+        data = _orient_preview(state.result_preview, state)
+        return send_file(io.BytesIO(data), mimetype="image/jpeg")
 
     @app.route("/api/invert", methods=["POST"])
     def api_invert():
@@ -342,6 +374,44 @@ def create_app() -> Flask:
             "auto_saved": _auto_save(state),
         })
 
+    @app.route("/api/rotate", methods=["POST"])
+    def api_rotate():
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+        data = request.get_json(force=True)
+        action = data.get("action", "cw")
+        if action == "cw":
+            state.orientation = (state.orientation + 1) % 4
+        elif action == "ccw":
+            state.orientation = (state.orientation + 3) % 4
+        elif action == "180":
+            state.orientation = (state.orientation + 2) % 4
+        return jsonify({
+            "orientation": state.orientation,
+            "flip_h": state.flip_h,
+            "flip_v": state.flip_v,
+            "preview": "/api/preview/result",
+            "auto_saved": _auto_save(state),
+        })
+
+    @app.route("/api/flip", methods=["POST"])
+    def api_flip():
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+        data = request.get_json(force=True)
+        axis = data.get("axis", "h")
+        if axis == "h":
+            state.flip_h = not state.flip_h
+        elif axis == "v":
+            state.flip_v = not state.flip_v
+        return jsonify({
+            "orientation": state.orientation,
+            "flip_h": state.flip_h,
+            "flip_v": state.flip_v,
+            "preview": "/api/preview/result",
+            "auto_saved": _auto_save(state),
+        })
+
     @app.route("/api/histogram")
     def api_histogram():
         if not state.result_preview:
@@ -382,6 +452,9 @@ def create_app() -> Flask:
             result = invert(_get_pipeline_input(state), state.params)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
+
+        # Apply orientation after crop, before write
+        result = apply_orientation(result, state.orientation, state.flip_h, state.flip_v)
 
         if fmt == "tiff32f":
             suffix, dtype, mime = ".tif", "float32", "image/tiff"

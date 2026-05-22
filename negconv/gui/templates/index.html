@@ -170,6 +170,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <div style="display:flex;gap:6px;margin-top:auto;padding-top:8px;border-top:1px solid #333;">
     <button class="btn" id="btn-before-after" style="flex:1" title="Before/After (\)">B/A</button>
     <button class="btn" id="btn-histogram" style="flex:1" title="Histogram (H)">Hist</button>
+    <button class="btn" id="btn-rotate-cw" style="flex:1" title="Rotate CW (R)">&#10227;</button>
+    <button class="btn" id="btn-rotate-ccw" style="flex:1" title="Rotate CCW (Shift+R)">&#10226;</button>
+    <button class="btn" id="btn-flip-h" style="flex:1" title="Flip H (F)">&#8596;</button>
     <button class="btn" id="btn-invert" style="flex:1" title="Re-invert">Re-inv</button>
   </div>
   <div style="font-size:0.7em;color:#555;">Alt+click label to reset | ? for shortcuts</div>
@@ -191,6 +194,9 @@ let panX = 0, panY = 0;
 let isPanning = false;
 let lastMouseX = 0, lastMouseY = 0;
 let debounceTimer = null;
+let clientOrientation = 0;
+let clientFlipH = false;
+let clientFlipV = false;
 
 const $ = id => document.getElementById(id);
 const img = $("preview");
@@ -221,7 +227,85 @@ function loadRecentFiles() {
 }
 loadRecentFiles();
 
-// Slider↔number input pairs
+// ---- Rotate / Flip ----
+function applyOrientationFromResponse(data) {
+  const prevOdd = clientOrientation % 2 === 1;
+  clientOrientation = data.orientation || 0;
+  clientFlipH = data.flip_h || false;
+  clientFlipV = data.flip_v || false;
+  const nowOdd = clientOrientation % 2 === 1;
+  if (prevOdd !== nowOdd) {
+    [previewWidth, previewHeight] = [previewHeight, previewWidth];
+  }
+  img.src = (data.preview || "/api/preview/result") + "?" + Date.now();
+  fitToWindow();
+}
+
+function doRotate(action) {
+  fetch("/api/rotate", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({action}),
+  }).then(r => r.json()).then(data => {
+    if (data.error) { alert(data.error); return; }
+    applyOrientationFromResponse(data);
+    if (data.auto_saved) flashStatus("Auto-saved");
+  }).catch(e => alert("Rotate failed: " + e));
+}
+
+function doFlip(axis) {
+  fetch("/api/flip", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({axis}),
+  }).then(r => r.json()).then(data => {
+    if (data.error) { alert(data.error); return; }
+    applyOrientationFromResponse(data);
+    if (data.auto_saved) flashStatus("Auto-saved");
+  }).catch(e => alert("Flip failed: " + e));
+}
+
+$("btn-rotate-cw").addEventListener("click", () => doRotate("cw"));
+$("btn-rotate-ccw").addEventListener("click", () => doRotate("ccw"));
+$("btn-flip-h").addEventListener("click", () => doFlip("h"));
+
+// ---- Coord remapping (preview space ↔ original space) ----
+function previewToOriginalCoords(px, py) {
+  const pw = previewWidth, ph = previewHeight;
+  let ox, oy;
+  switch (clientOrientation) {
+    case 0: ox = px; oy = py; break;
+    case 1: ox = py; oy = pw - 1 - px; break;
+    case 2: ox = pw - 1 - px; oy = ph - 1 - py; break;
+    case 3: ox = ph - 1 - py; oy = px; break;
+  }
+  const origPW = (clientOrientation % 2 === 0) ? pw : ph;
+  const origPH = (clientOrientation % 2 === 0) ? ph : pw;
+  if (clientFlipH) ox = origPW - 1 - ox;
+  if (clientFlipV) oy = origPH - 1 - oy;
+  return {
+    x: Math.round(ox * currentDims[1] / origPW),
+    y: Math.round(oy * currentDims[0] / origPH),
+  };
+}
+
+function originalToPreviewCoords(ox, oy) {
+  const pw = previewWidth, ph = previewHeight;
+  const origPW = (clientOrientation % 2 === 0) ? pw : ph;
+  const origPH = (clientOrientation % 2 === 0) ? ph : pw;
+  let px = ox * origPW / currentDims[1];
+  let py = oy * origPH / currentDims[0];
+  if (clientFlipH) px = origPW - 1 - px;
+  if (clientFlipV) py = origPH - 1 - py;
+  let rx, ry;
+  switch (clientOrientation) {
+    case 0: rx = px; ry = py; break;
+    case 1: rx = origPH - 1 - py; ry = px; break;
+    case 2: rx = origPW - 1 - px; ry = origPH - 1 - py; break;
+    case 3: rx = py; ry = origPW - 1 - px; break;
+  }
+  return { x: rx, y: ry };
+}
 const sliderPairs = [
   { sl: "sl-dmax",     num: "num-dmax" },
   { sl: "sl-gamma",    num: "num-gamma" },
@@ -402,6 +486,13 @@ $("btn-load").addEventListener("click", () => {
     currentFilename = data.filename;
     currentDims = data.dims;
     cropRectOrig = data.crop_rect || null;
+    clientOrientation = data.orientation || 0;
+    clientFlipH = data.flip_h || false;
+    clientFlipV = data.flip_v || false;
+    // Swap preview dims if orientation is odd
+    if (clientOrientation % 2 === 1) {
+      [previewWidth, previewHeight] = [previewHeight, previewWidth];
+    }
     updateUI(data.params);
     updateStatus();
     updateCropOverlay();
@@ -441,12 +532,13 @@ img.addEventListener("click", (e) => {
   const scaleY = previewHeight / rect.height;
   const px = Math.round((e.clientX - rect.left) * scaleX);
   const py = Math.round((e.clientY - rect.top) * scaleY);
+  const orig = previewToOriginalCoords(px, py);
 
   setLoading(true);
   fetch("/api/pick-dmin", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({x: px, y: py}),
+    body: JSON.stringify({x: orig.x, y: orig.y}),
   })
   .then(r => r.json())
   .then(data => {
@@ -497,19 +589,21 @@ function updateCropOverlay() {
     return;
   }
 
-  // Convert original crop rect to preview coords, then to viewer CSS coords
+  // Convert original crop rect to preview coords (accounting for rotation/flip)
   const rect = img.getBoundingClientRect();
   const vw = $("viewer").clientWidth;
   const vh = $("viewer").clientHeight;
   const scaleX = rect.width / previewWidth;
   const scaleY = rect.height / previewHeight;
-  const scaleOX = currentDims[1] / previewWidth;
-  const scaleOY = currentDims[0] / previewHeight;
 
-  const cx = rect.left + cropRectOrig.x / scaleOX * scaleX;
-  const cy = rect.top + cropRectOrig.y / scaleOY * scaleY;
-  const cw = cropRectOrig.w / scaleOX * scaleX;
-  const ch = cropRectOrig.h / scaleOY * scaleY;
+  // Map crop corners through originalToPreviewCoords
+  const tl = originalToPreviewCoords(cropRectOrig.x, cropRectOrig.y);
+  const br = originalToPreviewCoords(cropRectOrig.x + cropRectOrig.w, cropRectOrig.y + cropRectOrig.h);
+
+  const cx = rect.left + Math.min(tl.x, br.x) * scaleX;
+  const cy = rect.top + Math.min(tl.y, br.y) * scaleY;
+  const cw = Math.abs(br.x - tl.x) * scaleX;
+  const ch = Math.abs(br.y - tl.y) * scaleY;
 
   maskTop.style.cssText = `position:absolute;display:block;background:rgba(0,0,0,0.5);left:0;top:0;width:${vw}px;height:${cy}px;pointer-events:none;`;
   maskBot.style.cssText = `position:absolute;display:block;background:rgba(0,0,0,0.5);left:0;top:${cy+ch}px;width:${vw}px;height:${vh-cy-ch}px;pointer-events:none;`;
@@ -587,8 +681,8 @@ window.addEventListener("mouseup", (e) => {
 
   const p1 = clientToPreview(x1, y1);
   const p2 = clientToPreview(x2, y2);
-  const o1 = previewToOrig(p1.x, p1.y);
-  const o2 = previewToOrig(p2.x, p2.y);
+  const o1 = previewToOriginalCoords(p1.x, p1.y);
+  const o2 = previewToOriginalCoords(p2.x, p2.y);
 
   // Clamp to image bounds
   const oh = currentDims[0], ow = currentDims[1];
@@ -892,6 +986,12 @@ document.addEventListener("keydown", (e) => {
   } else if (e.key === " ") {
     e.preventDefault();
     fitToWindow();
+  } else if (e.key === "r" && !e.shiftKey) {
+    doRotate("cw");
+  } else if (e.key === "R" || (e.key === "r" && e.shiftKey)) {
+    doRotate("ccw");
+  } else if (e.key === "f" || e.key === "F") {
+    doFlip("h");
   } else if (e.key === "?") {
     toggleShortcutOverlay();
   } else if (e.key === "1") {
@@ -928,6 +1028,9 @@ function toggleShortcutOverlay() {
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">H</td><td>Toggle histogram</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">\</td><td>Before / After</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Space</td><td>Fit to window</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">R</td><td>Rotate CW</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Shift+R</td><td>Rotate CCW</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">F</td><td>Flip horizontal</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">1</td><td>Preset: Color (C-41)</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">2</td><td>Preset: B&W</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+S</td><td>Save params</td></tr>

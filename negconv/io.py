@@ -151,6 +151,24 @@ def extract_exif(path: str | Path) -> bytes | None:
     return None
 
 
+# np.rot90 rotates CCW by k*90°
+# Our orientation: 1=90°CW, 2=180°, 3=270°CW
+# So orientation 1 → k=3 (270° CCW = 90° CW)
+_ROT90_K = {1: 3, 2: 2, 3: 1}
+
+
+def apply_orientation(image: np.ndarray, orientation: int,
+                      flip_h: bool, flip_v: bool) -> np.ndarray:
+    """Apply flip first, then rotation to match display orientation."""
+    if flip_h:
+        image = np.flip(image, axis=1)
+    if flip_v:
+        image = np.flip(image, axis=0)
+    if orientation in _ROT90_K:
+        image = np.rot90(image, k=_ROT90_K[orientation])
+    return np.ascontiguousarray(image)
+
+
 def write_image(path: str | Path, img: np.ndarray, dtype: str = "float32") -> None:
     """Write a float32 image to TIFF.
 

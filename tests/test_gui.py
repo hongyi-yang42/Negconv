@@ -587,3 +587,112 @@ class TestExportFormats:
             assert len(icc) > 0
         finally:
             os.unlink(path)
+
+
+class TestRotateFlip:
+    def _make_tiff(self, width=200, height=100):
+        """Create a temp TIFF with known content and return path."""
+        f = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
+        data = np.zeros((height, width, 3), dtype=np.uint16)
+        data[:height//2, :width//2, 0] = 65535   # top-left = red
+        data[:height//2, width//2:, 2] = 65535    # top-right = blue
+        data[height//2:, :width//2, 1] = 65535    # bottom-left = green
+        data[height//2:, width//2:, :] = 65535    # bottom-right = white
+        tifffile.imwrite(f.name, data, photometric="rgb")
+        f.close()
+        return f.name
+
+    def test_rotate_cw_export_dimensions(self):
+        """Rotating a 200x100 image CW produces 100x200 export."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        path = self._make_tiff(200, 100)
+        try:
+            client.post("/api/load", json={"path": path})
+            client.post("/api/invert")
+            resp = client.post("/api/rotate", json={"action": "cw"})
+            assert resp.status_code == 200
+            assert resp.get_json()["orientation"] == 1
+
+            resp = client.post("/api/export", json={"format": "tiff16"})
+            assert resp.status_code == 200
+            arr = tifffile.imread(io.BytesIO(resp.data))
+            # H=100, W=200 rotated CW → H=200, W=100
+            assert arr.shape == (200, 100, 3), f"Expected (200,100,3), got {arr.shape}"
+        finally:
+            os.unlink(path)
+
+    def test_flip_h_pixel_values(self):
+        """Flip H produces valid export with same dimensions and asymmetric content."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        path = self._make_tiff(200, 100)
+        try:
+            client.post("/api/load", json={"path": path})
+            client.post("/api/invert")
+
+            # Export without flip
+            resp1 = client.post("/api/export", json={"format": "tiff16"})
+            arr1 = tifffile.imread(io.BytesIO(resp1.data))
+
+            # Flip and export
+            resp = client.post("/api/flip", json={"axis": "h"})
+            assert resp.status_code == 200
+            assert resp.get_json()["flip_h"] is True
+
+            resp2 = client.post("/api/export", json={"format": "tiff16"})
+            assert resp2.status_code == 200
+            arr2 = tifffile.imread(io.BytesIO(resp2.data))
+
+            # Same shape
+            assert arr1.shape == arr2.shape
+            # Content differs (asymmetric image → flip changes pixel values)
+            assert not np.array_equal(arr1, arr2), "Flip should change pixel content"
+        finally:
+            os.unlink(path)
+
+    def test_rotate_persisted_in_sidecar(self):
+        """Rotate CW twice, verify sidecar has orientation=2, reload restores it."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        path = self._make_tiff(50, 50)
+        sidecar = path + ".negconv.json"
+        try:
+            client.post("/api/load", json={"path": path})
+            client.post("/api/rotate", json={"action": "cw"})
+            client.post("/api/rotate", json={"action": "cw"})
+
+            with open(sidecar) as f:
+                saved = json.load(f)
+            assert saved["orientation"] == 2
+
+            resp = client.post("/api/load", json={"path": path})
+            assert resp.get_json()["orientation"] == 2
+        finally:
+            os.unlink(path)
+            if os.path.isfile(sidecar):
+                os.unlink(sidecar)
+
+    def test_crop_after_rotate(self):
+        """Crop in original space + rotate CW exports correctly."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        path = self._make_tiff(200, 100)
+        try:
+            client.post("/api/load", json={"path": path})
+            client.post("/api/invert")
+            resp = client.post("/api/crop", json={"x": 0, "y": 0, "w": 100, "h": 50})
+            assert resp.status_code == 200
+            resp = client.post("/api/rotate", json={"action": "cw"})
+            assert resp.status_code == 200
+            resp = client.post("/api/export", json={"format": "tiff16"})
+            assert resp.status_code == 200
+            arr = tifffile.imread(io.BytesIO(resp.data))
+            # Cropped 100x50 (WxH), rotated CW → 50x100 (WxH), shape=(100,50,3)
+            assert arr.shape == (100, 50, 3), f"Expected (100,50,3), got {arr.shape}"
+        finally:
+            os.unlink(path)
