@@ -19,6 +19,15 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 #resize-handle { width: 6px; cursor: col-resize; background: #333; flex-shrink: 0; transition: background 0.15s; }
 #resize-handle:hover, #resize-handle.active { background: #2a6; }
 
+/* Filmstrip */
+#filmstrip { position: absolute; bottom: 0; left: 0; right: 0; height: 80px; background: #1a1a1a; border-top: 1px solid #333; overflow-x: auto; white-space: nowrap; display: none; z-index: 10; scrollbar-width: thin; }
+#filmstrip .fs-item { display: inline-block; width: 80px; text-align: center; padding: 4px; cursor: pointer; vertical-align: top; border: 2px solid transparent; border-radius: 4px; margin: 2px; }
+#filmstrip .fs-item:hover { background: #2a2a2a; }
+#filmstrip .fs-item.active { border-color: #4a9; }
+#filmstrip .fs-item img { max-width: 72px; max-height: 50px; object-fit: contain; background: #222; }
+#filmstrip .fs-item .fs-name { font-size: 9px; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
+#filmstrip #carry-label { position: absolute; right: 8px; top: 4px; color: #888; font-size: 11px; cursor: pointer; user-select: none; }
+
 /* Crop overlay */
 #crop-overlay { position: absolute; top: 0; left: 0; width: 0; height: 0; pointer-events: none; }
 .crop-mask { position: absolute; background: rgba(0,0,0,0.5); }
@@ -72,6 +81,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <div id="histogram-wrap">
     <canvas id="histogram-canvas" width="240" height="120"></canvas>
   </div>
+  <div id="filmstrip"></div>
 </div>
 
 <div id="resize-handle"></div>
@@ -85,6 +95,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
       <input id="filepath" type="text" placeholder="/path/to/scan.ARW" spellcheck="false" list="recent-files">
       <datalist id="recent-files"></datalist>
       <button class="btn btn-primary" id="btn-load">Load</button>
+      <button class="btn" id="btn-reset" title="Reset this photo to defaults">Reset</button>
       <button class="btn" id="btn-clear">Clear</button>
     </div>
     <div id="status">No image loaded</div>
@@ -176,6 +187,48 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <button class="btn" id="btn-invert" style="flex:1" title="Re-invert">Re-inv</button>
   </div>
   <div style="font-size:0.7em;color:#555;">Alt+click label to reset | ? for shortcuts</div>
+
+  <!-- Settings button -->
+  <button class="btn" id="btn-settings" style="margin-top:auto;padding-top:8px;border-top:1px solid #333;width:100%;" title="Settings">&#9881; Settings</button>
+</div>
+
+<!-- Settings modal -->
+<div id="settings-modal" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:1000;justify-content:center;align-items:center;">
+  <div style="background:#222;border-radius:8px;padding:24px 28px;color:#ddd;font-size:0.9em;max-width:380px;max-height:80vh;overflow-y:auto;">
+    <h2 style="margin-bottom:16px;font-size:1.1em;color:#999;text-transform:uppercase;letter-spacing:0.05em;">Settings</h2>
+
+    <h3 style="margin:12px 0 8px;color:#2a6;font-size:0.85em;text-transform:uppercase;">Scanning</h3>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85em;">
+      <input type="checkbox" id="set-carry-params"> Carry params between frames
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85em;">
+      <input type="checkbox" id="set-auto-redetect"> Auto re-detect after crop
+    </label>
+
+    <h3 style="margin:16px 0 8px;color:#2a6;font-size:0.85em;text-transform:uppercase;">Image Quality</h3>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85em;">
+      <span style="min-width:100px;">Preview size</span>
+      <select id="set-preview-size" style="flex:1;background:#333;border:1px solid #444;color:#ddd;padding:3px 6px;border-radius:3px;">
+        <option value="1200">High (1200px)</option>
+        <option value="900">Medium (900px)</option>
+        <option value="600">Low (600px)</option>
+      </select>
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85em;">
+      <span style="min-width:100px;">Preview quality</span>
+      <select id="set-preview-quality" style="flex:1;background:#333;border:1px solid #444;color:#ddd;padding:3px 6px;border-radius:3px;">
+        <option value="90">High (90)</option>
+        <option value="75">Medium (75)</option>
+        <option value="60">Low (60)</option>
+      </select>
+    </label>
+    <div style="font-size:0.75em;color:#666;margin-top:2px;">Lower = faster over remote connection</div>
+
+    <div style="margin-top:20px;display:flex;gap:8px;">
+      <button class="btn btn-primary" id="settings-save" style="flex:1;">Save</button>
+      <button class="btn" id="settings-cancel" style="flex:1;">Cancel</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -197,10 +250,14 @@ let debounceTimer = null;
 let clientOrientation = 0;
 let clientFlipH = false;
 let clientFlipV = false;
+let currentTotalFiles = 0;
 
 const $ = id => document.getElementById(id);
 const img = $("preview");
 const viewerImg = $("viewer-img");
+
+// Reposition crop overlay after image loads (coords depend on rendered dimensions)
+img.addEventListener("load", () => updateCropOverlay());
 
 // Flash a status message for 2 seconds
 let statusFlashTimer = null;
@@ -210,6 +267,15 @@ function flashStatus(msg) {
   st.textContent = msg;
   clearTimeout(statusFlashTimer);
   statusFlashTimer = setTimeout(() => { st.textContent = orig; }, 2000);
+}
+
+// Fetch with connection-loss awareness
+function apiFetch(url, opts) {
+  return fetch(url, opts).catch(e => {
+    setLoading(false);
+    flashStatus("Connection lost — retrying...");
+    throw e;
+  });
 }
 
 // Load recent files into datalist
@@ -226,6 +292,71 @@ function loadRecentFiles() {
   }).catch(() => {});
 }
 loadRecentFiles();
+
+// ---- Filmstrip ----
+async function loadFilmstrip() {
+  const res = await fetch("/api/directory");
+  const data = await res.json();
+  const strip = $("filmstrip");
+
+  if (!data.files || data.files.length <= 1) {
+    strip.style.display = "none";
+    fitToWindow();
+    return;
+  }
+
+  strip.style.display = "block";
+
+  let html = data.files.map(f => {
+    const active = f.index === data.current_index ? ' active' : '';
+    const nameColor = f.has_sidecar ? '#4a9' : '#666';
+    return `<div class="fs-item${active}" data-index="${f.index}" onclick="navigateTo(${f.index})">
+      <img src="/api/thumb/${f.index}" onerror="this.style.opacity='0.3'">
+      <div class="fs-name" style="color:${nameColor}">${f.name}</div>
+    </div>`;
+  }).join("");
+
+  html += `<label id="carry-label"><input type="checkbox" id="carry-params" ${data.carry_params ? "checked" : ""}
+    onchange="fetch('/api/carry-params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:this.checked})})">
+    Carry params</label>`;
+
+  strip.innerHTML = html;
+
+  const current = strip.querySelector(".fs-item.active");
+  if (current) current.scrollIntoView({behavior: "smooth", inline: "center", block: "nearest"});
+}
+
+async function navigateTo(index) {
+  setLoading(true);
+  const res = await fetch("/api/navigate", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({index}),
+  });
+  setLoading(false);
+  if (!res.ok) return;
+  const data = await res.json();
+  if (data.error) { alert(data.error); return; }
+  applyLoadResponse(data);
+  loadFilmstrip();
+  fetchAndDrawHistogram();
+}
+
+async function navigateDir(direction) {
+  setLoading(true);
+  const res = await fetch("/api/navigate", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({direction}),
+  });
+  setLoading(false);
+  if (!res.ok) return;
+  const data = await res.json();
+  if (data.error) { alert(data.error); return; }
+  applyLoadResponse(data);
+  loadFilmstrip();
+  fetchAndDrawHistogram();
+}
 
 // ---- Rotate / Flip ----
 function applyOrientationFromResponse(data) {
@@ -272,17 +403,19 @@ $("btn-flip-h").addEventListener("click", () => doFlip("h"));
 // ---- Coord remapping (preview space ↔ original space) ----
 function previewToOriginalCoords(px, py) {
   const pw = previewWidth, ph = previewHeight;
+  // Rendering: rotate → flip. Inverse: unflip → unrotate
+  let fx = px, fy = py;
+  if (clientFlipH) fx = pw - 1 - fx;
+  if (clientFlipV) fy = ph - 1 - fy;
   let ox, oy;
   switch (clientOrientation) {
-    case 0: ox = px; oy = py; break;
-    case 1: ox = py; oy = pw - 1 - px; break;
-    case 2: ox = pw - 1 - px; oy = ph - 1 - py; break;
-    case 3: ox = ph - 1 - py; oy = px; break;
+    case 0: ox = fx; oy = fy; break;
+    case 1: ox = fy; oy = pw - 1 - fx; break;
+    case 2: ox = pw - 1 - fx; oy = ph - 1 - fy; break;
+    case 3: ox = ph - 1 - fy; oy = fx; break;
   }
   const origPW = (clientOrientation % 2 === 0) ? pw : ph;
   const origPH = (clientOrientation % 2 === 0) ? ph : pw;
-  if (clientFlipH) ox = origPW - 1 - ox;
-  if (clientFlipV) oy = origPH - 1 - oy;
   return {
     x: Math.round(ox * currentDims[1] / origPW),
     y: Math.round(oy * currentDims[0] / origPH),
@@ -295,8 +428,7 @@ function originalToPreviewCoords(ox, oy) {
   const origPH = (clientOrientation % 2 === 0) ? ph : pw;
   let px = ox * origPW / currentDims[1];
   let py = oy * origPH / currentDims[0];
-  if (clientFlipH) px = origPW - 1 - px;
-  if (clientFlipV) py = origPH - 1 - py;
+  // Forward: rotate → flip
   let rx, ry;
   switch (clientOrientation) {
     case 0: rx = px; ry = py; break;
@@ -304,6 +436,8 @@ function originalToPreviewCoords(ox, oy) {
     case 2: rx = origPW - 1 - px; ry = origPH - 1 - py; break;
     case 3: rx = py; ry = origPW - 1 - px; break;
   }
+  if (clientFlipH) rx = pw - 1 - rx;
+  if (clientFlipV) ry = ph - 1 - ry;
   return { x: rx, y: ry };
 }
 const sliderPairs = [
@@ -328,9 +462,15 @@ function setLoading(on) {
 
 // Single-line status
 function updateStatus() {
-  let text = currentFilename ? `${currentFilename}  ${currentDims[0]}x${currentDims[1]}` : "No image loaded";
+  if (!currentFilename) { $("status").textContent = "No image loaded"; return; }
+  let text = currentFilename;
+  if (currentTotalFiles > 1) {
+    text += ` (${state_currentIndex + 1}/${currentTotalFiles})`;
+  }
+  text += `  ${currentDims[0]}x${currentDims[1]}`;
   $("status").textContent = text;
 }
+let state_currentIndex = 0;
 
 // Sync slider → number input
 function syncSlToNum(slId, numId) {
@@ -463,6 +603,37 @@ function updateUI(params) {
   }
 }
 
+// Shared handler for /api/load and /api/navigate responses
+function applyLoadResponse(data) {
+  img.src = (data.preview || "/api/preview/orig") + "?" + Date.now();
+  img.style.display = "block";
+  if (data.preview_dims) {
+    previewWidth = data.preview_dims[0];
+    previewHeight = data.preview_dims[1];
+  }
+  currentFilename = data.filename;
+  currentDims = data.dims;
+  cropRectOrig = data.crop_rect || null;
+  clientOrientation = data.orientation || 0;
+  clientFlipH = data.flip_h || false;
+  clientFlipV = data.flip_v || false;
+  if (data.current_index !== undefined) state_currentIndex = data.current_index;
+  if (data.total_files !== undefined) currentTotalFiles = data.total_files;
+  if (clientOrientation % 2 === 1) {
+    [previewWidth, previewHeight] = [previewHeight, previewWidth];
+  }
+  updateUI(data.params);
+  updateStatus();
+  updateCropOverlay();
+  fitToWindow();
+  // Reset modes
+  currentSrcIsOriginal = false;
+  $("btn-before-after").classList.remove("btn-active");
+  if (cropMode) { cropMode = false; $("btn-crop").classList.remove("btn-active"); }
+  if (pickingDmin) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); }
+  img.style.cursor = "default";
+}
+
 // Load image
 $("btn-load").addEventListener("click", () => {
   const path = $("filepath").value.trim();
@@ -477,28 +648,10 @@ $("btn-load").addEventListener("click", () => {
   .then(data => {
     setLoading(false);
     if (data.error) { alert(data.error); return; }
-    img.src = "/api/preview/orig?" + Date.now();
-    img.style.display = "block";
-    if (data.preview_dims) {
-      previewWidth = data.preview_dims[0];
-      previewHeight = data.preview_dims[1];
-    }
-    currentFilename = data.filename;
-    currentDims = data.dims;
-    cropRectOrig = data.crop_rect || null;
-    clientOrientation = data.orientation || 0;
-    clientFlipH = data.flip_h || false;
-    clientFlipV = data.flip_v || false;
-    // Swap preview dims if orientation is odd
-    if (clientOrientation % 2 === 1) {
-      [previewWidth, previewHeight] = [previewHeight, previewWidth];
-    }
-    updateUI(data.params);
-    updateStatus();
-    updateCropOverlay();
-    fitToWindow();
+    applyLoadResponse(data);
     if (data.sidecar_loaded) flashStatus("Loaded from sidecar");
     loadRecentFiles();
+    loadFilmstrip();
   })
   .catch(e => { setLoading(false); alert("Load failed: " + e); });
 });
@@ -663,6 +816,10 @@ $("btn-clear-crop").addEventListener("click", () => {
 $("viewer").addEventListener("mousedown", (e) => {
   if (!cropMode || e.button !== 0) return;
   if (img.style.display === "none") return;
+  // Reject clicks outside the image
+  const imgRect = img.getBoundingClientRect();
+  if (e.clientX < imgRect.left || e.clientX > imgRect.right ||
+      e.clientY < imgRect.top || e.clientY > imgRect.bottom) return;
   cropDrawing = true;
   cropStartX = e.clientX;
   cropStartY = e.clientY;
@@ -701,6 +858,11 @@ window.addEventListener("mouseup", (e) => {
 
   const p1 = clientToPreview(x1, y1);
   const p2 = clientToPreview(x2, y2);
+  // Clamp preview coords to image bounds
+  p1.x = Math.max(0, Math.min(previewWidth - 1, p1.x));
+  p1.y = Math.max(0, Math.min(previewHeight - 1, p1.y));
+  p2.x = Math.max(0, Math.min(previewWidth - 1, p2.x));
+  p2.y = Math.max(0, Math.min(previewHeight - 1, p2.y));
   const o1 = previewToOriginalCoords(p1.x, p1.y);
   const o2 = previewToOriginalCoords(p2.x, p2.y);
 
@@ -711,7 +873,7 @@ window.addEventListener("mouseup", (e) => {
   const cw = Math.min(ow, o2.x) - cx;
   const ch = Math.min(oh, o2.y) - cy;
 
-  if (cw < 10 || ch < 10) return; // too small, ignore
+  if (cw < 10 || ch < 10) { flashStatus("Crop too small"); return; }
 
   setLoading(true);
   fetch("/api/crop", {
@@ -826,10 +988,14 @@ function toggleBeforeAfter() {
     if (lastResultSrc) img.src = lastResultSrc;
     else img.src = "/api/preview/result?" + Date.now();
     currentSrcIsOriginal = false;
+    $("btn-before-after").classList.remove("btn-active");
+    flashStatus("Result");
   } else {
     lastResultSrc = img.src;
     img.src = "/api/preview/orig?" + Date.now();
     currentSrcIsOriginal = true;
+    $("btn-before-after").classList.add("btn-active");
+    flashStatus("Original (negative)");
   }
 }
 
@@ -901,7 +1067,8 @@ function fitToWindow() {
   panX = 0; panY = 0;
   if (!previewWidth || !previewHeight) { zoomLevel = 1; applyTransform(); return; }
   const vw = $("viewer").clientWidth;
-  const vh = $("viewer").clientHeight;
+  let vh = $("viewer").clientHeight;
+  if ($("filmstrip").style.display !== "none") vh -= 80;
   zoomLevel = Math.min(vw / previewWidth, vh / previewHeight);
   panX = (vw - previewWidth * zoomLevel) / 2;
   panY = (vh - previewHeight * zoomLevel) / 2;
@@ -967,6 +1134,23 @@ window.addEventListener("mouseup", () => {
 });
 
 // ---- Clear button ----
+// Reset current photo to defaults (delete sidecar, reload fresh)
+$("btn-reset").addEventListener("click", () => {
+  if (!currentFilename) return;
+  if (!confirm("Reset all edits for this photo?")) return;
+  setLoading(true);
+  fetch("/api/reset", {method: "POST"})
+  .then(r => r.json())
+  .then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    applyLoadResponse(data);
+    flashStatus("Reset to defaults");
+    loadFilmstrip();
+  })
+  .catch(e => { setLoading(false); alert("Reset failed (connection lost?)"); });
+});
+
 $("btn-clear").addEventListener("click", () => {
   img.style.display = "none";
   img.src = "";
@@ -1019,6 +1203,10 @@ document.addEventListener("keydown", (e) => {
     doRotate("ccw");
   } else if (e.key === "f" || e.key === "F") {
     doFlip("h");
+  } else if (e.key === "ArrowRight") {
+    navigateDir("next");
+  } else if (e.key === "ArrowLeft") {
+    navigateDir("prev");
   } else if (e.key === "?") {
     toggleShortcutOverlay();
   } else if (e.key === "1") {
@@ -1059,6 +1247,7 @@ function toggleShortcutOverlay() {
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">R</td><td>Rotate CW</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Shift+R</td><td>Rotate CCW</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">F</td><td>Flip horizontal</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">&larr; / &rarr;</td><td>Prev / Next frame</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">1</td><td>Preset: Color (C-41)</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">2</td><td>Preset: B&W</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+S</td><td>Save params</td></tr>
@@ -1087,6 +1276,51 @@ document.addEventListener("keydown", (e) => {
     toggleShortcutOverlay();
     e.stopPropagation();
   }
+}, true);
+
+// ---- Settings modal ----
+let settingsVisible = false;
+function loadSettingsToUI(settings) {
+  $("set-carry-params").checked = settings.carry_params;
+  $("set-auto-redetect").checked = settings.auto_redetect_on_crop;
+  $("set-preview-size").value = String(settings.preview_max_width);
+  $("set-preview-quality").value = String(settings.preview_quality);
+}
+function openSettings() {
+  settingsVisible = true;
+  $("settings-modal").style.display = "flex";
+  fetch("/api/settings").then(r => r.json()).then(s => loadSettingsToUI(s));
+}
+function closeSettings() {
+  settingsVisible = false;
+  $("settings-modal").style.display = "none";
+}
+function saveSettings() {
+  const s = {
+    carry_params: $("set-carry-params").checked,
+    auto_redetect_on_crop: $("set-auto-redetect").checked,
+    preview_max_width: parseInt($("set-preview-size").value),
+    preview_quality: parseInt($("set-preview-quality").value),
+  };
+  fetch("/api/settings", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(s),
+  }).then(() => {
+    const cb = $("carry-params");
+    if (cb) cb.checked = s.carry_params;
+    closeSettings();
+    flashStatus("Settings saved");
+  });
+}
+$("btn-settings").addEventListener("click", openSettings);
+$("settings-save").addEventListener("click", saveSettings);
+$("settings-cancel").addEventListener("click", closeSettings);
+$("settings-modal").addEventListener("click", (e) => {
+  if (e.target === $("settings-modal")) closeSettings();
+});
+document.addEventListener("keydown", (e) => {
+  if (settingsVisible && e.key === "Escape") { closeSettings(); e.stopPropagation(); }
 }, true);
 </script>
 </body>

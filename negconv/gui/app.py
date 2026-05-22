@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +20,34 @@ from .viewer import make_preview
 
 PREVIEW_MAX_WIDTH = 1200
 RECENT_FILE = Path.home() / ".negconv" / "recent.json"
+SETTINGS_FILE = Path.home() / ".negconv" / "settings.json"
+SUPPORTED_EXTENSIONS = {'.arw', '.cr2', '.cr3', '.nef', '.raf', '.dng', '.tif', '.tiff'}
+
+THUMB_DIR = Path.home() / ".negconv" / "thumbs"
+THUMB_WIDTH = 120
+_thumb_executor = ThreadPoolExecutor(max_workers=2)
+
+DEFAULT_SETTINGS = {
+    "carry_params": False,
+    "auto_redetect_on_crop": True,
+    "preview_quality": 90,
+    "preview_max_width": 1200,
+}
+
+
+def _load_settings() -> dict:
+    if SETTINGS_FILE.is_file():
+        with open(SETTINGS_FILE) as f:
+            saved = json.load(f)
+        merged = {**DEFAULT_SETTINGS, **saved}
+        return merged
+    return dict(DEFAULT_SETTINGS)
+
+
+def _save_settings(settings: dict) -> None:
+    SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=2)
 
 
 @dataclass
@@ -33,6 +63,10 @@ class GuiState:
     orientation: int = 0      # 0=normal, 1=90°CW, 2=180°, 3=270°CW
     flip_h: bool = False
     flip_v: bool = False
+    directory_files: list[str] = field(default_factory=list)
+    current_index: int = 0
+    carry_params: bool = False
+    settings: dict = field(default_factory=lambda: dict(DEFAULT_SETTINGS))
 
 
 def _sample_dmin(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
@@ -73,17 +107,17 @@ _PIL_ROTATE = {1: 4, 2: 3, 3: 2}  # PIL: 4=ROTATE_270(=90°CW), 3=ROTATE_180, 2=
 
 
 def _orient_preview(jpeg_bytes: bytes, state: GuiState) -> bytes:
-    """Apply flip then rotation to preview JPEG bytes. Returns new JPEG bytes."""
+    """Apply rotation then flip to preview JPEG bytes. Flip is relative to displayed orientation."""
     if state.orientation == 0 and not state.flip_h and not state.flip_v:
         return jpeg_bytes
     from PIL import Image as PILImage
     img = PILImage.open(io.BytesIO(jpeg_bytes))
+    if state.orientation in _PIL_ROTATE:
+        img = img.transpose(_PIL_ROTATE[state.orientation])
     if state.flip_h:
         img = img.transpose(PILImage.FLIP_LEFT_RIGHT)
     if state.flip_v:
         img = img.transpose(PILImage.FLIP_TOP_BOTTOM)
-    if state.orientation in _PIL_ROTATE:
-        img = img.transpose(_PIL_ROTATE[state.orientation])
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=85)
     return buf.getvalue()
@@ -171,9 +205,114 @@ def _add_recent(file_path: str) -> None:
     _save_recent(recent[:10])
 
 
+def _scan_directory(file_path: str) -> list[str]:
+    """Scan parent directory for supported image files, sorted alphabetically."""
+    parent = Path(file_path).parent
+    files = []
+    for f in sorted(parent.iterdir()):
+        if f.suffix.lower() in SUPPORTED_EXTENSIONS and f.is_file():
+            files.append(str(f))
+    return files
+
+
+def _thumb_path(file_path: str) -> Path:
+    mtime = os.path.getmtime(file_path)
+    key = f"{file_path}:{mtime}"
+    h = hashlib.md5(key.encode()).hexdigest()
+    return THUMB_DIR / f"{h}.jpg"
+
+
+def _generate_thumb(file_path: str) -> None:
+    tp = _thumb_path(file_path)
+    if tp.exists():
+        return
+    tp.parent.mkdir(parents=True, exist_ok=True)
+    ext = Path(file_path).suffix.lower()
+    try:
+        if ext in {'.arw', '.cr2', '.cr3', '.nef', '.raf', '.dng'}:
+            import rawpy
+            raw = rawpy.imread(file_path)
+            thumb = raw.extract_thumb()
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                from PIL import Image as PILImage
+                img = PILImage.open(io.BytesIO(thumb.data))
+            else:
+                from PIL import Image as PILImage
+                img = PILImage.fromarray(thumb.data)
+        else:
+            from PIL import Image as PILImage
+            img = PILImage.open(file_path)
+        ratio = THUMB_WIDTH / img.width
+        img = img.resize((THUMB_WIDTH, int(img.height * ratio)), PILImage.LANCZOS)
+        img = img.convert("RGB")
+        img.save(str(tp), "JPEG", quality=70)
+    except Exception:
+        pass
+
+
+def _start_thumbnails(files: list[str]) -> None:
+    for f in files:
+        _thumb_executor.submit(_generate_thumb, f)
+
+
+def _load_file(state: GuiState, path: str, skip_preview: bool = False) -> bool:
+    """Load a file into state. Returns True if sidecar was loaded."""
+    img = read_image(path)
+    state.original_img = img
+    state.file_path = path
+    state.params = auto_detect(img)
+    state.crop_rect = None
+    state.source_exif = extract_exif(path)
+    state.orientation = 0
+    state.flip_h = False
+    state.flip_v = False
+
+    sidecar_loaded = False
+    sidecar = _load_sidecar(path)
+    if sidecar is not None:
+        _apply_sidecar(state, sidecar)
+        sidecar_loaded = True
+
+    if not skip_preview:
+        max_w = state.settings.get("preview_max_width", PREVIEW_MAX_WIDTH)
+        state.orig_preview = make_preview(img, max_w)
+        from PIL import Image as PILImage
+        pil_preview = PILImage.open(io.BytesIO(state.orig_preview))
+        state.preview_dims = (pil_preview.width, pil_preview.height)
+
+    return sidecar_loaded
+
+
+def _run_pipeline(state: GuiState) -> None:
+    """Run inversion pipeline and store result preview."""
+    result = invert(_get_pipeline_input(state), state.params)
+    max_w = state.settings.get("preview_max_width", PREVIEW_MAX_WIDTH)
+    quality = state.settings.get("preview_quality", 90)
+    state.result_preview = make_preview(result, max_w, quality=quality)
+
+
+def _redetect_in_crop(state: GuiState) -> None:
+    """Re-detect Dmin/Dmax within crop + 5% inset, update params, run pipeline."""
+    img = state.original_img
+
+    if state.crop_rect:
+        r = state.crop_rect
+        img = img[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]]
+
+    h, w = img.shape[:2]
+    mx = max(1, int(w * 0.05))
+    my = max(1, int(h * 0.05))
+    img_inner = img[my:h - my, mx:w - mx]
+
+    new_params = auto_detect(img_inner)
+    state.params.dmin = new_params.dmin
+    state.params.d_max = new_params.d_max
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
-    state = GuiState()
+    state = GuiState(settings=_load_settings())
+    state.carry_params = state.settings.get("carry_params", False)
 
     @app.route("/")
     def index():
@@ -187,39 +326,20 @@ def create_app() -> Flask:
             return jsonify({"error": f"File not found: {path}"}), 400
 
         try:
-            img = read_image(path)
+            sidecar_loaded = _load_file(state, path)
         except Exception as e:
             return jsonify({"error": f"Failed to read: {e}"}), 400
 
-        state.original_img = img
-        state.file_path = path
-        state.params = auto_detect(img)
-        state.crop_rect = None
-        state.source_exif = extract_exif(path)
-        state.orientation = 0
-        state.flip_h = False
-        state.flip_v = False
+        state.directory_files = _scan_directory(path)
+        try:
+            state.current_index = state.directory_files.index(path)
+        except ValueError:
+            state.current_index = 0
 
-        # Auto-load sidecar if present
-        sidecar_loaded = False
-        sidecar = _load_sidecar(path)
-        if sidecar is not None:
-            _apply_sidecar(state, sidecar)
-            sidecar_loaded = True
-
-        state.orig_preview = make_preview(img, PREVIEW_MAX_WIDTH)
-
-        # Compute preview dimensions for coordinate mapping
-        from PIL import Image as PILImage
-        pil_preview = PILImage.open(
-            __import__("io").BytesIO(state.orig_preview)
-        )
-        state.preview_dims = (pil_preview.width, pil_preview.height)
-
-        # Record in recent files
         _add_recent(path)
+        _start_thumbnails(state.directory_files)
 
-        h, w = img.shape[:2]
+        h, w = state.original_img.shape[:2]
         result = {
             "preview": "/api/preview/orig",
             "params": _params_to_dict(state.params, state.crop_rect),
@@ -231,6 +351,8 @@ def create_app() -> Flask:
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
+            "current_index": state.current_index,
+            "total_files": len(state.directory_files),
         }
         return jsonify(result)
 
@@ -254,8 +376,7 @@ def create_app() -> Flask:
             return jsonify({"error": "No image loaded"}), 400
 
         try:
-            result = invert(_get_pipeline_input(state), state.params)
-            state.result_preview = make_preview(result, PREVIEW_MAX_WIDTH)
+            _run_pipeline(state)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
 
@@ -284,9 +405,8 @@ def create_app() -> Flask:
         dmin = _sample_dmin(state.original_img, orig_x, orig_y)
         state.params.dmin = dmin
 
-        # Auto-invert with new Dmin
         try:
-            result = invert(state.original_img, state.params)
+            result = invert(_get_pipeline_input(state), state.params)
             state.result_preview = make_preview(result, PREVIEW_MAX_WIDTH)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
@@ -319,6 +439,38 @@ def create_app() -> Flask:
             return jsonify({"error": f"Unknown preset: {name}"}), 400
         return jsonify(_params_to_dict(state.params, state.crop_rect))
 
+    @app.route("/api/reset", methods=["POST"])
+    def api_reset():
+        """Reset current image to defaults: delete sidecar, reload fresh."""
+        if not state.file_path:
+            return jsonify({"error": "No file loaded"}), 400
+        # Delete sidecar
+        sp = _sidecar_path(state.file_path)
+        if os.path.isfile(sp):
+            os.unlink(sp)
+        # Reload with fresh defaults
+        try:
+            _load_file(state, state.file_path)
+        except Exception as e:
+            return jsonify({"error": f"Failed to reload: {e}"}), 400
+        try:
+            _run_pipeline(state)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+        h, w = state.original_img.shape[:2]
+        return jsonify({
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "crop_rect": state.crop_rect,
+            "filename": Path(state.file_path).name,
+            "dims": [h, w],
+            "preview_dims": list(state.preview_dims),
+            "sidecar_loaded": False,
+            "orientation": state.orientation,
+            "flip_h": state.flip_h,
+            "flip_v": state.flip_v,
+        })
+
     @app.route("/api/clear", methods=["POST"])
     def api_clear():
         state.original_img = None
@@ -328,6 +480,8 @@ def create_app() -> Flask:
         state.result_preview = b""
         state.preview_dims = (0, 0)
         state.crop_rect = None
+        state.directory_files = []
+        state.current_index = 0
         return jsonify({"ok": True})
 
     @app.route("/api/crop", methods=["POST"])
@@ -341,9 +495,12 @@ def create_app() -> Flask:
             "w": int(data["w"]), "h": int(data["h"]),
         }
 
+        # Auto re-detect Dmin/Dmax within crop if setting enabled
+        if state.settings.get("auto_redetect_on_crop", True):
+            _redetect_in_crop(state)
+
         try:
-            result = invert(_get_pipeline_input(state), state.params)
-            state.result_preview = make_preview(result, PREVIEW_MAX_WIDTH)
+            _run_pipeline(state)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
 
@@ -386,11 +543,12 @@ def create_app() -> Flask:
             state.orientation = (state.orientation + 3) % 4
         elif action == "180":
             state.orientation = (state.orientation + 2) % 4
+        preview_url = "/api/preview/result" if state.result_preview else "/api/preview/orig"
         return jsonify({
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
-            "preview": "/api/preview/result",
+            "preview": preview_url,
             "auto_saved": _auto_save(state),
         })
 
@@ -404,11 +562,12 @@ def create_app() -> Flask:
             state.flip_h = not state.flip_h
         elif axis == "v":
             state.flip_v = not state.flip_v
+        preview_url = "/api/preview/result" if state.result_preview else "/api/preview/orig"
         return jsonify({
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
-            "preview": "/api/preview/result",
+            "preview": preview_url,
             "auto_saved": _auto_save(state),
         })
 
@@ -417,26 +576,10 @@ def create_app() -> Flask:
         if state.original_img is None:
             return jsonify({"error": "No image loaded"}), 400
 
-        img = state.original_img
-
-        # If crop is set, scope to cropped region
-        if state.crop_rect:
-            r = state.crop_rect
-            img = img[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]]
-
-        # Apply 5% inset margin to exclude border artifacts
-        h, w = img.shape[:2]
-        mx = max(1, int(w * 0.05))
-        my = max(1, int(h * 0.05))
-        img_inner = img[my:h - my, mx:w - mx]
-
-        new_params = auto_detect(img_inner)
-        state.params.dmin = new_params.dmin
-        state.params.d_max = new_params.d_max
+        _redetect_in_crop(state)
 
         try:
-            result = invert(_get_pipeline_input(state), state.params)
-            state.result_preview = make_preview(result, PREVIEW_MAX_WIDTH)
+            _run_pipeline(state)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
 
@@ -474,6 +617,152 @@ def create_app() -> Flask:
         # Filter out paths that no longer exist
         recent = [r for r in recent if os.path.isfile(r.get("path", ""))]
         return jsonify(recent)
+
+    @app.route("/api/directory")
+    def api_directory():
+        files = []
+        for i, path in enumerate(state.directory_files):
+            files.append({
+                "path": path,
+                "name": Path(path).name,
+                "index": i,
+                "has_sidecar": os.path.isfile(_sidecar_path(path)),
+            })
+        return jsonify({
+            "files": files,
+            "current_index": state.current_index,
+            "carry_params": state.carry_params,
+        })
+
+    @app.route("/api/navigate", methods=["POST"])
+    def api_navigate():
+        data = request.get_json(force=True)
+
+        if not state.directory_files:
+            return jsonify({"error": "No directory loaded"}), 400
+
+        if "index" in data:
+            target = data["index"]
+        elif "direction" in data:
+            d = data["direction"]
+            target = state.current_index + (1 if d == "next" else -1 if d == "prev" else 0)
+        else:
+            return jsonify({"error": "Provide index or direction"}), 400
+
+        if target < 0 or target >= len(state.directory_files):
+            return jsonify({"error": "No more files"}), 400
+
+        # 1. Snapshot current state for carry
+        carry_snapshot = {
+            "params": NegconvParams(
+                dmin=state.params.dmin.copy(),
+                d_max=state.params.d_max,
+                wb_high=state.params.wb_high.copy(),
+                wb_low=state.params.wb_low.copy(),
+                offset=state.params.offset,
+                exposure=state.params.exposure,
+                black=state.params.black,
+                gamma=state.params.gamma,
+                soft_clip=state.params.soft_clip,
+            ),
+            "crop_rect": state.crop_rect,
+            "orientation": state.orientation,
+            "flip_h": state.flip_h,
+            "flip_v": state.flip_v,
+        }
+
+        # 2. Auto-save current file
+        _auto_save(state)
+
+        # 3. Load new file (skip orig_preview — we'll make result_preview)
+        new_path = state.directory_files[target]
+        try:
+            sidecar_loaded = _load_file(state, new_path, skip_preview=True)
+        except Exception as e:
+            return jsonify({"error": f"Failed to read: {e}"}), 400
+        state.current_index = target
+
+        # 4. If no sidecar and carry is ON, apply carry
+        if not sidecar_loaded and state.carry_params:
+            cp = carry_snapshot["params"]
+            state.params.gamma = cp.gamma
+            state.params.exposure = cp.exposure
+            state.params.black = cp.black
+            state.params.soft_clip = cp.soft_clip
+            state.params.offset = cp.offset
+            state.params.wb_high = cp.wb_high.copy()
+            state.params.wb_low = cp.wb_low.copy()
+
+            state.crop_rect = carry_snapshot["crop_rect"]
+            state.orientation = carry_snapshot["orientation"]
+            state.flip_h = carry_snapshot["flip_h"]
+            state.flip_v = carry_snapshot["flip_v"]
+
+            # Re-detect Dmin/Dmax within carried crop + 5% inset
+            _redetect_in_crop(state)
+
+        # 5. Always run pipeline so result preview is available
+        try:
+            _run_pipeline(state)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+
+        # Compute preview_dims from result (orig_preview was skipped for navigate)
+        if not state.preview_dims[0]:
+            from PIL import Image as PILImage
+            pil = PILImage.open(io.BytesIO(state.result_preview))
+            state.preview_dims = (pil.width, pil.height)
+            state.orig_preview = state.result_preview
+
+        # 6. Add to recent
+        _add_recent(new_path)
+
+        h, w = state.original_img.shape[:2]
+        return jsonify({
+            "preview": "/api/preview/result" if state.result_preview else "/api/preview/orig",
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "crop_rect": None,  # overlay not shown — preview already reflects crop
+            "filename": Path(new_path).name,
+            "dims": [h, w],
+            "preview_dims": list(state.preview_dims),
+            "sidecar_loaded": sidecar_loaded,
+            "current_index": state.current_index,
+            "total_files": len(state.directory_files),
+            "orientation": state.orientation,
+            "flip_h": state.flip_h,
+            "flip_v": state.flip_v,
+        })
+
+    @app.route("/api/carry-params", methods=["POST"])
+    def api_carry_params():
+        data = request.get_json(force=True)
+        state.carry_params = bool(data.get("enabled", True))
+        state.settings["carry_params"] = state.carry_params
+        _save_settings(state.settings)
+        return jsonify({"carry_params": state.carry_params})
+
+    @app.route("/api/settings", methods=["GET"])
+    def api_get_settings():
+        return jsonify(state.settings)
+
+    @app.route("/api/settings", methods=["POST"])
+    def api_set_settings():
+        data = request.get_json(force=True)
+        for key, val in data.items():
+            if key in DEFAULT_SETTINGS:
+                state.settings[key] = val
+        state.carry_params = state.settings.get("carry_params", False)
+        _save_settings(state.settings)
+        return jsonify(state.settings)
+
+    @app.route("/api/thumb/<int:index>")
+    def api_thumb(index):
+        if index < 0 or index >= len(state.directory_files):
+            return "", 404
+        tp = _thumb_path(state.directory_files[index])
+        if tp.exists():
+            return send_file(str(tp), mimetype="image/jpeg")
+        return "", 404
 
     @app.route("/api/export", methods=["POST"])
     def api_export():

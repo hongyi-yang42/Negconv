@@ -19,7 +19,7 @@ def linear_to_srgb(img: np.ndarray) -> np.ndarray:
     return out.astype(np.float32)
 
 
-def make_preview(img: np.ndarray, max_width: int = 1200) -> bytes:
+def make_preview(img: np.ndarray, max_width: int = 1200, quality: int = 90) -> bytes:
     """Convert a linear float32 image to a JPEG preview.
 
     Clips to [0, 1], applies sRGB gamma, resizes to fit max_width,
@@ -39,5 +39,5 @@ def make_preview(img: np.ndarray, max_width: int = 1200) -> bytes:
         pil_img = pil_img.resize(new_size, Image.LANCZOS)
 
     buf = io.BytesIO()
-    pil_img.save(buf, format="JPEG", quality=90)
+    pil_img.save(buf, format="JPEG", quality=quality)
     return buf.getvalue()
