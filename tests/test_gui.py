@@ -571,3 +571,19 @@ class TestExportFormats:
                 os.unlink(path)
         finally:
             app_mod.write_heic = original
+
+    def test_jpeg_icc_profile_embedded(self):
+        """JPEG export includes sRGB ICC profile."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        path = self._load_and_invert(client)
+        try:
+            resp = client.post("/api/export", json={"format": "jpeg", "quality": 92})
+            assert resp.status_code == 200
+            pil = Image.open(io.BytesIO(resp.data))
+            icc = pil.info.get("icc_profile")
+            assert icc is not None, "JPEG missing sRGB ICC profile"
+            assert len(icc) > 0
+        finally:
+            os.unlink(path)

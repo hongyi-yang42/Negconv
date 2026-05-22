@@ -212,8 +212,7 @@ def write_jpeg(path: str | Path, img: np.ndarray, quality: int = 92) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rgb = _linear_to_srgb_uint8(img)
     pil = Image.fromarray(rgb, "RGB")
-    pil.info["icc_profile"] = _get_srgb_icc()
-    pil.save(str(path), "JPEG", quality=quality)
+    pil.save(str(path), "JPEG", quality=quality, icc_profile=_get_srgb_icc())
 
 
 def write_heic(path: str | Path, img: np.ndarray, quality: int = 92) -> None:
@@ -229,5 +228,4 @@ def write_heic(path: str | Path, img: np.ndarray, quality: int = 92) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rgb = _linear_to_srgb_uint8(img)
     pil = Image.fromarray(rgb, "RGB")
-    pil.info["icc_profile"] = _get_srgb_icc()
-    pil.save(str(path), "HEIF", quality=quality)
+    pil.save(str(path), "HEIF", quality=quality, icc_profile=_get_srgb_icc())

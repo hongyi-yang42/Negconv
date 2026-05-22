@@ -418,7 +418,10 @@ def create_app() -> Flask:
                 for tag, val in src_exif.items():
                     if tag not in (0x0201, 0x0202, 0x0112):  # skip thumbnail, orientation
                         exif[tag] = val
-                pil.save(tmp.name, pil.format, exif=exif.tobytes())
+                save_kw = {"exif": exif.tobytes()}
+                if pil.info.get("icc_profile"):
+                    save_kw["icc_profile"] = pil.info["icc_profile"]
+                pil.save(tmp.name, pil.format, **save_kw)
 
             return send_file(
                 tmp.name,
