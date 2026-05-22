@@ -19,6 +19,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 #resize-handle { width: 6px; cursor: col-resize; background: #333; flex-shrink: 0; transition: background 0.15s; }
 #resize-handle:hover, #resize-handle.active { background: #2a6; }
 
+/* Crop overlay */
+#crop-overlay { position: absolute; top: 0; left: 0; width: 0; height: 0; pointer-events: none; }
+.crop-mask { position: absolute; background: rgba(0,0,0,0.5); }
+#crop-border { position: absolute; border: 2px dashed rgba(255,255,255,0.8); pointer-events: none; }
+#crop-drawing { position: absolute; border: 2px dashed #c63; background: rgba(200,100,50,0.1); display: none; }
+
 /* Sidebar */
 #sidebar { width: 280px; min-width: 200px; max-width: 500px; background: #222; border-left: 1px solid #333; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; flex-shrink: 0; }
 #sidebar h2 { font-size: 1em; color: #999; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid #333; padding-bottom: 4px; }
@@ -50,6 +56,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <div id="viewer-img">
     <img id="preview" src="" alt="Load an image to begin" style="display:none;">
   </div>
+  <div id="crop-overlay">
+    <div class="crop-mask" id="mask-top"></div>
+    <div class="crop-mask" id="mask-bottom"></div>
+    <div class="crop-mask" id="mask-left"></div>
+    <div class="crop-mask" id="mask-right"></div>
+    <div id="crop-border"></div>
+  </div>
+  <div id="crop-drawing"></div>
 </div>
 
 <div id="resize-handle"></div>
@@ -79,6 +93,16 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
       <label>G <input type="number" id="dmin-g" class="readonly-dmin" step="0.001" min="0.01" max="2.0" value="" readonly></label>
       <label>B <input type="number" id="dmin-b" class="readonly-dmin" step="0.001" min="0.01" max="2.0" value="" readonly></label>
     </div>
+  </div>
+
+  <!-- Crop -->
+  <div class="section">
+    <h2>Crop</h2>
+    <div style="display:flex;gap:6px;">
+      <button class="btn" id="btn-crop">Set Crop</button>
+      <button class="btn" id="btn-clear-crop">Clear Crop</button>
+    </div>
+    <div id="crop-info" style="font-size:0.8em;color:#888;display:none;"></div>
   </div>
 
   <!-- Presets -->
@@ -138,6 +162,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 <script>
 // State
 let pickingDmin = false;
+let cropMode = false;
+let cropDrawing = false;
+let cropStartX = 0, cropStartY = 0;
+let cropRectOrig = null; // {"x","y","w","h"} in original coords, or null
 let previewWidth = 0;
 let previewHeight = 0;
 let currentFilename = "";
@@ -333,8 +361,10 @@ $("btn-load").addEventListener("click", () => {
     }
     currentFilename = data.filename;
     currentDims = data.dims;
+    cropRectOrig = data.crop_rect || null;
     updateUI(data.params);
     updateStatus();
+    updateCropOverlay();
     fitToWindow();
   })
   .catch(e => { setLoading(false); alert("Load failed: " + e); });
@@ -387,6 +417,162 @@ img.addEventListener("click", (e) => {
   .catch(e => { setLoading(false); alert("Pick failed: " + e); });
 });
 
+// ---- Crop tool ----
+// Convert client coords to preview pixel coords (accounts for CSS transform)
+function clientToPreview(cx, cy) {
+  const rect = img.getBoundingClientRect();
+  const scaleX = previewWidth / rect.width;
+  const scaleY = previewHeight / rect.height;
+  return {
+    x: Math.round((cx - rect.left) * scaleX),
+    y: Math.round((cy - rect.top) * scaleY),
+  };
+}
+
+// Convert preview pixel coords to original image coords
+function previewToOrig(px, py) {
+  return {
+    x: Math.round(px * currentDims[1] / previewWidth),
+    y: Math.round(py * currentDims[0] / previewHeight),
+  };
+}
+
+// Position the 4 dark mask divs + border around crop rectangle (in viewer space)
+function updateCropOverlay() {
+  const maskTop = $("mask-top"), maskBot = $("mask-bottom");
+  const maskLeft = $("mask-left"), maskRight = $("mask-right");
+  const border = $("crop-border");
+  const info = $("crop-info");
+
+  if (!cropRectOrig || !previewWidth) {
+    maskTop.style.display = "none";
+    maskBot.style.display = "none";
+    maskLeft.style.display = "none";
+    maskRight.style.display = "none";
+    border.style.display = "none";
+    info.style.display = "none";
+    return;
+  }
+
+  // Convert original crop rect to preview coords, then to viewer CSS coords
+  const rect = img.getBoundingClientRect();
+  const vw = $("viewer").clientWidth;
+  const vh = $("viewer").clientHeight;
+  const scaleX = rect.width / previewWidth;
+  const scaleY = rect.height / previewHeight;
+  const scaleOX = currentDims[1] / previewWidth;
+  const scaleOY = currentDims[0] / previewHeight;
+
+  const cx = rect.left + cropRectOrig.x / scaleOX * scaleX;
+  const cy = rect.top + cropRectOrig.y / scaleOY * scaleY;
+  const cw = cropRectOrig.w / scaleOX * scaleX;
+  const ch = cropRectOrig.h / scaleOY * scaleY;
+
+  maskTop.style.cssText = `position:absolute;display:block;background:rgba(0,0,0,0.5);left:0;top:0;width:${vw}px;height:${cy}px;pointer-events:none;`;
+  maskBot.style.cssText = `position:absolute;display:block;background:rgba(0,0,0,0.5);left:0;top:${cy+ch}px;width:${vw}px;height:${vh-cy-ch}px;pointer-events:none;`;
+  maskLeft.style.cssText = `position:absolute;display:block;background:rgba(0,0,0,0.5);left:0;top:${cy}px;width:${cx}px;height:${ch}px;pointer-events:none;`;
+  maskRight.style.cssText = `position:absolute;display:block;background:rgba(0,0,0,0.5);left:${cx+cw}px;top:${cy}px;width:${vw-cx-cw}px;height:${ch}px;pointer-events:none;`;
+  border.style.cssText = `position:absolute;display:block;border:2px dashed rgba(255,255,255,0.8);left:${cx}px;top:${cy}px;width:${cw}px;height:${ch}px;pointer-events:none;`;
+  info.style.display = "block";
+  info.textContent = `Crop: ${cropRectOrig.w}x${cropRectOrig.h} at (${cropRectOrig.x}, ${cropRectOrig.y})`;
+}
+
+// Crop mode toggle
+$("btn-crop").addEventListener("click", () => {
+  cropMode = !cropMode;
+  $("btn-crop").classList.toggle("btn-active", cropMode);
+  if (cropMode) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); }
+  img.style.cursor = cropMode ? "crosshair" : (pickingDmin ? "crosshair" : "default");
+});
+
+// Clear crop
+$("btn-clear-crop").addEventListener("click", () => {
+  setLoading(true);
+  fetch("/api/crop", {method: "DELETE"})
+  .then(r => r.json())
+  .then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    cropRectOrig = null;
+    img.src = "/api/preview/result?" + Date.now();
+    updateUI(data.params);
+    updateCropOverlay();
+  })
+  .catch(e => { setLoading(false); alert("Clear crop failed: " + e); });
+});
+
+// Crop drawing via click+drag
+$("viewer").addEventListener("mousedown", (e) => {
+  if (!cropMode || e.button !== 0) return;
+  if (img.style.display === "none") return;
+  cropDrawing = true;
+  cropStartX = e.clientX;
+  cropStartY = e.clientY;
+  const drawEl = $("crop-drawing");
+  drawEl.style.display = "block";
+  drawEl.style.left = e.clientX + "px";
+  drawEl.style.top = e.clientY + "px";
+  drawEl.style.width = "0px";
+  drawEl.style.height = "0px";
+  e.preventDefault();
+});
+
+window.addEventListener("mousemove", (e) => {
+  if (!cropDrawing) return;
+  const drawEl = $("crop-drawing");
+  const x = Math.min(cropStartX, e.clientX);
+  const y = Math.min(cropStartY, e.clientY);
+  const w = Math.abs(e.clientX - cropStartX);
+  const h = Math.abs(e.clientY - cropStartY);
+  drawEl.style.left = x + "px";
+  drawEl.style.top = y + "px";
+  drawEl.style.width = w + "px";
+  drawEl.style.height = h + "px";
+});
+
+window.addEventListener("mouseup", (e) => {
+  if (!cropDrawing) return;
+  cropDrawing = false;
+  $("crop-drawing").style.display = "none";
+
+  // Convert drag corners to original image coords
+  const x1 = Math.min(cropStartX, e.clientX);
+  const y1 = Math.min(cropStartY, e.clientY);
+  const x2 = Math.max(cropStartX, e.clientX);
+  const y2 = Math.max(cropStartY, e.clientY);
+
+  const p1 = clientToPreview(x1, y1);
+  const p2 = clientToPreview(x2, y2);
+  const o1 = previewToOrig(p1.x, p1.y);
+  const o2 = previewToOrig(p2.x, p2.y);
+
+  // Clamp to image bounds
+  const oh = currentDims[0], ow = currentDims[1];
+  const cx = Math.max(0, o1.x);
+  const cy = Math.max(0, o1.y);
+  const cw = Math.min(ow, o2.x) - cx;
+  const ch = Math.min(oh, o2.y) - cy;
+
+  if (cw < 10 || ch < 10) return; // too small, ignore
+
+  setLoading(true);
+  fetch("/api/crop", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({x: cx, y: cy, w: cw, h: ch}),
+  })
+  .then(r => r.json())
+  .then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    cropRectOrig = data.crop_rect;
+    img.src = "/api/preview/result?" + Date.now();
+    updateUI(data.params);
+    updateCropOverlay();
+  })
+  .catch(e => { setLoading(false); alert("Crop failed: " + e); });
+});
+
 // Presets
 $("btn-preset-color").addEventListener("click", () => {
   fetch("/api/preset/color", {method: "POST"})
@@ -426,6 +612,7 @@ $("btn-export-32").addEventListener("click", () => doExport("float32"));
 // ---- Zoom & Pan ----
 function applyTransform() {
   viewerImg.style.transform = `translate(${panX}px, ${panY}px) scale(${zoomLevel})`;
+  updateCropOverlay();
 }
 function fitToWindow() {
   panX = 0; panY = 0;
@@ -449,7 +636,7 @@ $("viewer").addEventListener("wheel", (e) => {
 }, {passive: false});
 
 $("viewer").addEventListener("mousedown", (e) => {
-  if (e.button === 0 && !pickingDmin) {
+  if (e.button === 0 && !pickingDmin && !cropMode) {
     isPanning = true;
     lastMouseX = e.clientX; lastMouseY = e.clientY;
     img.style.cursor = "grabbing";
@@ -462,10 +649,10 @@ window.addEventListener("mousemove", (e) => {
   lastMouseX = e.clientX; lastMouseY = e.clientY;
   applyTransform();
 });
-window.addEventListener("mouseup", () => {
+window.addEventListener("mouseup", (e) => {
   if (isPanning) {
     isPanning = false;
-    img.style.cursor = pickingDmin ? "crosshair" : "default";
+    img.style.cursor = cropMode ? "crosshair" : (pickingDmin ? "crosshair" : "default");
   }
 });
 
@@ -502,8 +689,10 @@ $("btn-clear").addEventListener("click", () => {
   img.src = "";
   previewWidth = 0; previewHeight = 0;
   currentFilename = ""; currentDims = [0, 0];
-  pickingDmin = false;
+  pickingDmin = false; cropMode = false;
+  cropRectOrig = null;
   $("btn-pick").classList.remove("btn-active");
+  $("btn-crop").classList.remove("btn-active");
   $("filepath").value = "";
   $("dmin-r").value = ""; $("dmin-g").value = ""; $("dmin-b").value = "";
   updateStatus();

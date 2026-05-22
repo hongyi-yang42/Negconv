@@ -25,6 +25,7 @@ class GuiState:
     orig_preview: bytes = b""
     result_preview: bytes = b""
     preview_dims: tuple[int, int] = (0, 0)  # (width, height) of preview image
+    crop_rect: dict | None = None  # {"x","y","w","h"} in original coords
 
 
 def _sample_dmin(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
@@ -51,6 +52,14 @@ def _preview_to_orig_coords(
         min(max(orig_x, 0), orig_w - 1),
         min(max(orig_y, 0), orig_h - 1),
     )
+
+
+def _get_pipeline_input(state: GuiState) -> np.ndarray:
+    """Return the image region to run through the pipeline (cropped or full)."""
+    if state.crop_rect and state.original_img is not None:
+        r = state.crop_rect
+        return state.original_img[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]]
+    return state.original_img
 
 
 def create_app() -> Flask:
@@ -89,7 +98,8 @@ def create_app() -> Flask:
         h, w = img.shape[:2]
         return jsonify({
             "preview": "/api/preview/orig",
-            "params": _params_to_dict(state.params),
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "crop_rect": state.crop_rect,
             "filename": Path(path).name,
             "dims": [h, w],
             "preview_dims": list(state.preview_dims),
@@ -119,14 +129,14 @@ def create_app() -> Flask:
             return jsonify({"error": "No image loaded"}), 400
 
         try:
-            result = invert(state.original_img, state.params)
+            result = invert(_get_pipeline_input(state), state.params)
             state.result_preview = make_preview(result, PREVIEW_MAX_WIDTH)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
 
         return jsonify({
             "preview": "/api/preview/result",
-            "params": _params_to_dict(state.params),
+            "params": _params_to_dict(state.params, state.crop_rect),
         })
 
     @app.route("/api/pick-dmin", methods=["POST"])
@@ -159,18 +169,18 @@ def create_app() -> Flask:
         return jsonify({
             "dmin": dmin.tolist(),
             "preview": "/api/preview/result",
-            "params": _params_to_dict(state.params),
+            "params": _params_to_dict(state.params, state.crop_rect),
         })
 
     @app.route("/api/params", methods=["GET"])
     def api_get_params():
-        return jsonify(_params_to_dict(state.params))
+        return jsonify(_params_to_dict(state.params, state.crop_rect))
 
     @app.route("/api/params", methods=["POST"])
     def api_set_params():
         data = request.get_json(force=True)
         _update_params_from_dict(state.params, data)
-        return jsonify(_params_to_dict(state.params))
+        return jsonify(_params_to_dict(state.params, state.crop_rect))
 
     @app.route("/api/preset/<name>", methods=["POST"])
     def api_preset(name):
@@ -180,7 +190,7 @@ def create_app() -> Flask:
             state.params = NegconvParams.bw_film()
         else:
             return jsonify({"error": f"Unknown preset: {name}"}), 400
-        return jsonify(_params_to_dict(state.params))
+        return jsonify(_params_to_dict(state.params, state.crop_rect))
 
     @app.route("/api/clear", methods=["POST"])
     def api_clear():
@@ -190,7 +200,50 @@ def create_app() -> Flask:
         state.orig_preview = b""
         state.result_preview = b""
         state.preview_dims = (0, 0)
+        state.crop_rect = None
         return jsonify({"ok": True})
+
+    @app.route("/api/crop", methods=["POST"])
+    def api_set_crop():
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+
+        data = request.get_json(force=True)
+        state.crop_rect = {
+            "x": int(data["x"]), "y": int(data["y"]),
+            "w": int(data["w"]), "h": int(data["h"]),
+        }
+
+        try:
+            result = invert(_get_pipeline_input(state), state.params)
+            state.result_preview = make_preview(result, PREVIEW_MAX_WIDTH)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+
+        return jsonify({
+            "crop_rect": state.crop_rect,
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+        })
+
+    @app.route("/api/crop", methods=["DELETE"])
+    def api_clear_crop():
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+
+        state.crop_rect = None
+
+        try:
+            result = invert(state.original_img, state.params)
+            state.result_preview = make_preview(result, PREVIEW_MAX_WIDTH)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+
+        return jsonify({
+            "crop_rect": None,
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+        })
 
     @app.route("/api/export", methods=["POST"])
     def api_export():
@@ -201,7 +254,7 @@ def create_app() -> Flask:
         dtype = data.get("dtype", "uint16")
 
         try:
-            result = invert(state.original_img, state.params)
+            result = invert(_get_pipeline_input(state), state.params)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
 
@@ -222,8 +275,8 @@ def create_app() -> Flask:
     return app
 
 
-def _params_to_dict(params: NegconvParams) -> dict:
-    return {
+def _params_to_dict(params: NegconvParams, crop_rect: dict | None = None) -> dict:
+    d = {
         "dmin": params.dmin.tolist(),
         "d_max": params.d_max,
         "wb_high": params.wb_high.tolist(),
@@ -234,6 +287,9 @@ def _params_to_dict(params: NegconvParams) -> dict:
         "gamma": params.gamma,
         "soft_clip": params.soft_clip,
     }
+    if crop_rect is not None:
+        d["crop_rect"] = crop_rect
+    return d
 
 
 def _update_params_from_dict(params: NegconvParams, data: dict) -> None:

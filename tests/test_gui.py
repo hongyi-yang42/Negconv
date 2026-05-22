@@ -230,3 +230,88 @@ class TestFlaskRoutes:
             assert "tiff" in resp.content_type or "octet-stream" in resp.content_type
         finally:
             os.unlink(path)
+
+
+class TestCrop:
+    @pytest.fixture
+    def client_with_image(self):
+        """Client with a loaded 200x200 TIFF."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+            data = np.full((200, 200, 3), 30000, dtype=np.uint16)
+            tifffile.imwrite(f.name, data, photometric="rgb")
+            path = f.name
+        client.post("/api/load", json={"path": path})
+        yield client
+        os.unlink(path)
+
+    def test_crop_rect_stored_in_state(self, client_with_image):
+        """POST /api/crop stores crop_rect, GET /api/params includes it."""
+        resp = client_with_image.post("/api/crop", json={
+            "x": 10, "y": 20, "w": 100, "h": 80,
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["crop_rect"] == {"x": 10, "y": 20, "w": 100, "h": 80}
+
+        resp2 = client_with_image.get("/api/params")
+        params = resp2.get_json()
+        assert params["crop_rect"] == {"x": 10, "y": 20, "w": 100, "h": 80}
+
+    def test_pipeline_scoped_to_crop(self, client_with_image):
+        """With crop set, invert produces a valid preview."""
+        client_with_image.post("/api/crop", json={
+            "x": 0, "y": 0, "w": 50, "h": 200,
+        })
+        resp = client_with_image.post("/api/invert")
+        assert resp.status_code == 200
+        resp2 = client_with_image.get("/api/preview/result")
+        assert resp2.status_code == 200
+        assert resp2.content_type == "image/jpeg"
+
+    def test_params_include_crop(self, client_with_image):
+        """After setting crop, /api/params includes crop_rect."""
+        client_with_image.post("/api/crop", json={
+            "x": 10, "y": 10, "w": 180, "h": 180,
+        })
+        resp = client_with_image.get("/api/params")
+        data = resp.get_json()
+        assert data["crop_rect"] is not None
+        assert data["crop_rect"]["w"] == 180
+
+    def test_eyedropper_outside_crop(self, client_with_image):
+        """Eyedropper click outside crop_rect still updates Dmin."""
+        client_with_image.post("/api/crop", json={
+            "x": 0, "y": 0, "w": 50, "h": 50,
+        })
+        resp = client_with_image.post("/api/pick-dmin", json={"x": 200, "y": 200})
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert "dmin" in data
+        assert len(data["dmin"]) == 3
+
+    def test_clear_crop_reverts(self, client_with_image):
+        """DELETE /api/crop clears crop, pipeline runs on full image."""
+        client_with_image.post("/api/crop", json={
+            "x": 10, "y": 10, "w": 50, "h": 50,
+        })
+        resp = client_with_image.delete("/api/crop")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["crop_rect"] is None
+
+        resp2 = client_with_image.get("/api/params")
+        params = resp2.get_json()
+        assert params.get("crop_rect") is None
+
+    def test_crop_coord_mapping(self, client_with_image):
+        """Crop coords sent to API are in original image space."""
+        resp = client_with_image.post("/api/crop", json={
+            "x": 100, "y": 0, "w": 100, "h": 200,
+        })
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["crop_rect"]["x"] == 100
+        assert data["crop_rect"]["w"] == 100
