@@ -152,9 +152,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <!-- Export -->
   <div class="section">
     <h2>Export</h2>
-    <div style="display:flex;gap:6px;">
-      <button class="btn btn-primary" id="btn-export-16" style="flex:1">TIFF 16-bit</button>
-      <button class="btn btn-primary" id="btn-export-32" style="flex:1">TIFF 32f</button>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <select id="export-format" style="flex:1;background:#333;border:1px solid #444;color:#ddd;padding:4px;border-radius:3px;font-size:0.85em;">
+        <option value="tiff16">TIFF 16-bit</option>
+        <option value="tiff32f">TIFF 32f</option>
+        <option value="jpeg">JPEG</option>
+        <option value="heic">HEIC</option>
+      </select>
+      <button class="btn btn-primary" id="btn-export">Export</button>
+    </div>
+    <div id="quality-row" style="display:none;margin-top:4px;">
+      <label><span class="lbl">Quality</span> <input type="range" id="export-quality" min="10" max="100" step="1" value="92"> <span id="quality-val" style="font-size:0.85em;">92</span></label>
     </div>
   </div>
 
@@ -719,30 +727,51 @@ $("btn-preset-bw").addEventListener("click", () => {
 });
 
 // Export
-function doExport(dtype) {
+const exportFormat = $("export-format");
+const qualityRow = $("quality-row");
+const qualitySlider = $("export-quality");
+const qualityVal = $("quality-val");
+
+exportFormat.addEventListener("change", () => {
+  const show = exportFormat.value === "jpeg" || exportFormat.value === "heic";
+  qualityRow.style.display = show ? "block" : "none";
+});
+qualitySlider.addEventListener("input", () => {
+  qualityVal.textContent = qualitySlider.value;
+});
+
+function doExport() {
+  const fmt = exportFormat.value;
+  const q = parseInt(qualitySlider.value);
   setLoading(true);
   fetch("/api/export", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({dtype}),
+    body: JSON.stringify({format: fmt, quality: q}),
   })
   .then(r => {
     setLoading(false);
     if (!r.ok) return r.json().then(d => { throw new Error(d.error); });
-    return r.blob();
+    const ext = fmt === "tiff32f" || fmt === "tiff16" ? ".tif" : fmt === "jpeg" ? ".jpg" : ".heic";
+    const disp = r.headers.get("Content-Disposition");
+    let fname = "negconv_output" + ext;
+    if (disp) {
+      const m = disp.match(/filename="?([^"]+)"?/);
+      if (m) fname = m[1];
+    }
+    return r.blob().then(b => ({blob: b, fname}));
   })
-  .then(blob => {
+  .then(({blob, fname}) => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "negconv_output.tif";
+    a.download = fname;
     a.click();
     URL.revokeObjectURL(url);
   })
   .catch(e => { setLoading(false); alert("Export failed: " + e); });
 }
-$("btn-export-16").addEventListener("click", () => doExport("uint16"));
-$("btn-export-32").addEventListener("click", () => doExport("float32"));
+$("btn-export").addEventListener("click", doExport);
 
 // ---- Zoom & Pan ----
 function applyTransform() {
@@ -877,7 +906,7 @@ document.addEventListener("keydown", (e) => {
     });
   } else if (e.ctrlKey && e.key === "e") {
     e.preventDefault();
-    $("btn-export-16").click();
+    $("btn-export").click();
   }
 });
 

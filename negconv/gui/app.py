@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 from flask import Flask, jsonify, render_template, request, send_file
 
-from ..io import is_raw, read_image, write_image
+from ..io import extract_exif, is_raw, read_image, write_image, write_jpeg, write_heic
 from ..params import NegconvParams, auto_detect, save_params, load_params
 from ..pipeline import invert
 from .viewer import make_preview
@@ -28,6 +28,7 @@ class GuiState:
     result_preview: bytes = b""
     preview_dims: tuple[int, int] = (0, 0)  # (width, height) of preview image
     crop_rect: dict | None = None  # {"x","y","w","h"} in original coords
+    source_exif: bytes | None = None
 
 
 def _sample_dmin(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
@@ -164,6 +165,7 @@ def create_app() -> Flask:
         state.file_path = path
         state.params = auto_detect(img)
         state.crop_rect = None
+        state.source_exif = extract_exif(path)
 
         # Auto-load sidecar if present
         sidecar_loaded = False
@@ -372,26 +374,62 @@ def create_app() -> Flask:
             return jsonify({"error": "No image loaded"}), 400
 
         data = request.get_json(force=True) if request.is_json else {}
-        dtype = data.get("dtype", "uint16")
+        fmt = data.get("format", "tiff16")
+        quality = int(data.get("quality", 92))
+        stem = Path(state.file_path).stem if state.file_path else "output"
 
         try:
             result = invert(_get_pipeline_input(state), state.params)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
 
-        tmp = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
-        try:
-            write_image(tmp.name, result, dtype=dtype)
-            stem = Path(state.file_path).stem if state.file_path else "output"
+        if fmt == "tiff32f":
+            suffix, dtype, mime = ".tif", "float32", "image/tiff"
             filename = f"{stem}_negconv.tif"
+        elif fmt == "tiff16":
+            suffix, dtype, mime = ".tif", "uint16", "image/tiff"
+            filename = f"{stem}_negconv.tif"
+        elif fmt == "jpeg":
+            suffix, mime = ".jpg", "image/jpeg"
+            filename = f"{stem}_negconv.jpg"
+        elif fmt == "heic":
+            suffix, mime = ".heic", "image/heic"
+            filename = f"{stem}_negconv.heic"
+        else:
+            return jsonify({"error": f"Unknown format: {fmt}"}), 400
+
+        tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        try:
+            if fmt in ("tiff32f", "tiff16"):
+                write_image(tmp.name, result, dtype=dtype)
+            elif fmt == "jpeg":
+                write_jpeg(tmp.name, result, quality=quality)
+            elif fmt == "heic":
+                write_heic(tmp.name, result, quality=quality)
+
+            # Embed EXIF if available (for JPEG/HEIC only — TIFF gets no ICC)
+            if state.source_exif and fmt in ("jpeg", "heic"):
+                from PIL import Image as PILImage
+                pil = PILImage.open(tmp.name)
+                from PIL.ExifTags import Base as ExifBase
+                exif = pil.getexif()
+                src_exif = PILImage.Exif()
+                src_exif.load(state.source_exif)
+                for tag, val in src_exif.items():
+                    if tag not in (0x0201, 0x0202, 0x0112):  # skip thumbnail, orientation
+                        exif[tag] = val
+                pil.save(tmp.name, pil.format, exif=exif.tobytes())
+
             return send_file(
                 tmp.name,
                 as_attachment=True,
                 download_name=filename,
-                mimetype="image/tiff",
+                mimetype=mime,
             )
-        finally:
-            pass
+        except RuntimeError as e:
+            if "pillow-heif" in str(e):
+                return jsonify({"error": "HEIC export requires pillow-heif: pip install pillow-heif"}), 400
+            raise
 
     return app
 

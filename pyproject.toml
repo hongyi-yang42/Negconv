@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+heic = ["pillow-heif"]
 
 [tool.setuptools.packages.find]
 include = ["negconv*"]

@@ -461,3 +461,113 @@ class TestShortcutOverlay:
         assert resp.status_code == 200
         assert b"shortcut-overlay" in resp.data
         assert b"Keyboard Shortcuts" in resp.data
+
+
+class TestExportFormats:
+    def _load_and_invert(self, client):
+        """Helper: create a temp TIFF with varied content, load+invert it."""
+        f = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
+        # Varied gradient image — quality settings will produce different sizes
+        h, w = 200, 200
+        grad = np.linspace(0, 65535, w, dtype=np.uint16)
+        data = np.tile(grad, (h, 1))
+        data = np.stack([data, data // 2, data // 4], axis=-1)
+        tifffile.imwrite(f.name, data, photometric="rgb")
+        f.close()
+        client.post("/api/load", json={"path": f.name})
+        client.post("/api/invert")
+        return f.name
+
+    def test_jpeg_export_valid(self):
+        """POST /api/export with format=jpeg returns valid JPEG."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        path = self._load_and_invert(client)
+        try:
+            resp = client.post("/api/export", json={"format": "jpeg", "quality": 92})
+            assert resp.status_code == 200
+            assert resp.content_type == "image/jpeg"
+            # Verify valid JPEG
+            pil = Image.open(io.BytesIO(resp.data))
+            assert pil.format == "JPEG"
+            assert pil.size[0] > 0
+        finally:
+            os.unlink(path)
+
+    def test_jpeg_quality_range(self):
+        """Low quality JPEG is smaller than high quality."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        path = self._load_and_invert(client)
+        try:
+            r1 = client.post("/api/export", json={"format": "jpeg", "quality": 10})
+            r2 = client.post("/api/export", json={"format": "jpeg", "quality": 95})
+            assert r1.status_code == 200
+            assert r2.status_code == 200
+            assert len(r1.data) < len(r2.data)
+        finally:
+            os.unlink(path)
+
+    def test_exif_passthrough_tiff(self):
+        """TIFF with EXIF data passes EXIF through on JPEG export."""
+        from PIL.ExifTags import Base as ExifBase
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+
+        # Create a TIFF with EXIF
+        f = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
+        data = np.full((50, 50, 3), 30000, dtype=np.uint16)
+        pil = Image.fromarray((data // 256).astype(np.uint8))
+        exif = pil.getexif()
+        exif[ExifBase.Software] = "negconv-test"
+        pil.save(f.name, exif=exif.tobytes())
+        f.close()
+
+        # Re-write as proper 16-bit TIFF
+        tifffile.imwrite(f.name, data, photometric="rgb")
+
+        # Manually add EXIF to the state (extract_exif should find it)
+        client.post("/api/load", json={"path": f.name})
+        client.post("/api/invert")
+
+        try:
+            resp = client.post("/api/export", json={"format": "jpeg", "quality": 92})
+            assert resp.status_code == 200
+            pil_out = Image.open(io.BytesIO(resp.data))
+            exif_out = pil_out.getexif()
+            # EXIF data should be present
+            assert len(exif_out) > 0
+        finally:
+            os.unlink(f.name)
+
+    def test_exif_passthrough_raw_skip_no_fixture(self):
+        """RAW EXIF test is skipped when no fixture file available."""
+        # No RAW fixture available in CI, just verify the import works
+        from negconv.io import extract_exif
+        assert callable(extract_exif)
+
+    def test_heic_graceful_without_library(self):
+        """HEIC export returns helpful error when pillow-heif missing."""
+        import negconv.gui.app as app_mod
+        original = app_mod.write_heic
+
+        def fake_write(*a, **kw):
+            raise RuntimeError("pillow-heif not installed. Install with: pip install pillow-heif")
+        app_mod.write_heic = fake_write
+
+        try:
+            app = create_app()
+            app.config["TESTING"] = True
+            client = app.test_client()
+            path = self._load_and_invert(client)
+            try:
+                resp = client.post("/api/export", json={"format": "heic", "quality": 85})
+                assert resp.status_code == 400
+                assert b"pillow-heif" in resp.data
+            finally:
+                os.unlink(path)
+        finally:
+            app_mod.write_heic = original

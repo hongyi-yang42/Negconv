@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from . import __version__
-from .io import is_raw, read_image, write_image
+from .io import is_raw, read_image, write_image, write_jpeg, write_heic
 from .params import NegconvParams, auto_detect, load_params, save_params
 from .pipeline import invert
 
@@ -62,6 +62,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--dtype", choices=["float32", "uint16"], default="uint16",
         help="Output TIFF data type (default: uint16)",
+    )
+    p.add_argument(
+        "--format", choices=["tiff", "jpeg", "heic"], default=None,
+        help="Output format (default: auto-detect from extension, or tiff)",
+    )
+    p.add_argument(
+        "--quality", type=int, default=92,
+        help="JPEG/HEIC quality 1-100 (default: 92)",
     )
 
     # GUI mode
@@ -130,14 +138,38 @@ def _resolve_params(args: argparse.Namespace, img: np.ndarray) -> NegconvParams:
     return params
 
 
+def _output_format(output_path: str, fmt: str | None) -> str:
+    """Determine output format from --format flag or file extension."""
+    if fmt:
+        return fmt
+    ext = Path(output_path).suffix.lower()
+    if ext in (".jpg", ".jpeg"):
+        return "jpeg"
+    if ext in (".heic", ".heif"):
+        return "heic"
+    return "tiff"
+
+
+def _write_output(output_path: str, positive: np.ndarray,
+                   fmt: str, dtype: str, quality: int) -> None:
+    """Write the positive image in the specified format."""
+    if fmt == "jpeg":
+        write_jpeg(output_path, positive, quality=quality)
+    elif fmt == "heic":
+        write_heic(output_path, positive, quality=quality)
+    else:
+        write_image(output_path, positive, dtype=dtype)
+
+
 def _process_single(
     input_path: str, output_path: str,
     params: NegconvParams, dtype: str,
+    fmt: str = "tiff", quality: int = 92,
 ) -> None:
     """Read, invert, write a single file."""
     img = read_image(input_path)
     positive = invert(img, params)
-    write_image(output_path, positive, dtype=dtype)
+    _write_output(output_path, positive, fmt, dtype, quality)
 
     src_type = "RAW" if is_raw(input_path) else "TIFF"
     print(f"  {Path(input_path).name} ({src_type}) -> {Path(output_path).name}")
@@ -173,6 +205,8 @@ def main() -> None:
 
     input_path = Path(args.input)
     output_path = Path(args.output)
+    fmt = _output_format(str(output_path), args.format)
+    fmt_ext = {"tiff": ".tif", "jpeg": ".jpg", "heic": ".heic"}[fmt]
 
     # Determine single vs batch mode
     if input_path.is_dir():
@@ -201,10 +235,10 @@ def main() -> None:
 
         for i, inp in enumerate(inputs, 1):
             stem = Path(inp).stem
-            out_file = output_path / f"{stem}_negconv.tif"
+            out_file = output_path / f"{stem}_negconv{fmt_ext}"
             print(f"  Processing {i}/{len(inputs)}: {Path(inp).name}", end="")
             try:
-                _process_single(inp, str(out_file), params, args.dtype)
+                _process_single(inp, str(out_file), params, args.dtype, fmt, args.quality)
             except Exception as e:
                 print(f" ERROR: {e}", file=sys.stderr)
 
@@ -219,7 +253,7 @@ def main() -> None:
             save_params(params, args.save_params)
 
         positive = invert(img, params)
-        write_image(str(output_path), positive, dtype=args.dtype)
+        _write_output(str(output_path), positive, fmt, args.dtype, args.quality)
 
         src_type = "RAW" if is_raw(str(input_path)) else "TIFF"
         print(f"negconv {__version__}: {args.input} ({src_type}) -> {args.output}")

@@ -5,6 +5,7 @@ from pathlib import Path
 
 import numpy as np
 import tifffile
+from PIL import Image
 
 RAW_EXTENSIONS = {".cr2", ".cr3", ".arw", ".raf", ".nef", ".dng", ".orf", ".rw2", ".pef", ".srw", ".sr2", ".k25", ".kc"}
 
@@ -113,6 +114,43 @@ def is_raw(path: str | Path) -> bool:
     return Path(path).suffix.lower() in RAW_EXTENSIONS
 
 
+def extract_exif(path: str | Path) -> bytes | None:
+    """Extract EXIF data from an image file.
+
+    For RAW: tries rawpy first. For TIFF: uses Pillow.
+    Strips thumbnail and orientation tag to avoid issues.
+    Returns raw EXIF bytes or None.
+    """
+    path = Path(path)
+    ext = path.suffix.lower()
+
+    # Try rawpy for RAW files
+    if ext in RAW_EXTENSIONS:
+        try:
+            import rawpy
+            with rawpy.imread(str(path)) as raw:
+                exif = raw.extract_rawpy_exif()
+                if exif:
+                    return exif
+        except Exception:
+            pass
+
+    # Try Pillow for TIFF and as fallback for RAW
+    try:
+        pil = Image.open(str(path))
+        exif = pil.getexif()
+        if exif:
+            # Strip orientation and thumbnail
+            exif.pop(0x0112, None)  # Orientation
+            exif.pop(0x0201, None)  # Thumbnail offset
+            exif.pop(0x0202, None)  # Thumbnail length
+            return exif.tobytes()
+    except Exception:
+        pass
+
+    return None
+
+
 def write_image(path: str | Path, img: np.ndarray, dtype: str = "float32") -> None:
     """Write a float32 image to TIFF.
 
@@ -131,3 +169,65 @@ def write_image(path: str | Path, img: np.ndarray, dtype: str = "float32") -> No
         out = img.astype(np.float32)
 
     tifffile.imwrite(str(path), out, photometric="rgb")
+
+
+def _srgb_lut() -> np.ndarray:
+    """65536-entry LUT mapping linear [0,1] to sRGB [0,1]."""
+    lut = np.linspace(0, 1, 65536, dtype=np.float32)
+    mask = lut <= 0.0031308
+    lut[mask] = 12.92 * lut[mask]
+    lut[~mask] = 1.055 * np.power(lut[~mask], 1.0 / 2.4) - 0.055
+    return np.clip(lut, 0.0, 1.0)
+
+
+_SRGB_LUT = _srgb_lut()
+
+
+def _linear_to_srgb_uint8(img: np.ndarray) -> np.ndarray:
+    """Convert linear float32 (H,W,3) to sRGB uint8."""
+    clamped = np.clip(img, 0.0, 1.0)
+    idx = (clamped * 65535).astype(np.int32)
+    idx = np.clip(idx, 0, 65535)
+    srgb = _SRGB_LUT[idx]
+    return (srgb * 255.0 + 0.5).astype(np.uint8)
+
+
+_SRGB_ICC = None
+
+
+def _get_srgb_icc() -> bytes:
+    """Return sRGB ICC profile bytes (cached)."""
+    global _SRGB_ICC
+    if _SRGB_ICC is None:
+        from PIL import ImageCms
+        _SRGB_ICC = ImageCms.ImageCmsProfile(
+            ImageCms.createProfile("sRGB")
+        ).tobytes()
+    return _SRGB_ICC
+
+
+def write_jpeg(path: str | Path, img: np.ndarray, quality: int = 92) -> None:
+    """Write a float32 linear image as JPEG with sRGB gamma and ICC profile."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rgb = _linear_to_srgb_uint8(img)
+    pil = Image.fromarray(rgb, "RGB")
+    pil.info["icc_profile"] = _get_srgb_icc()
+    pil.save(str(path), "JPEG", quality=quality)
+
+
+def write_heic(path: str | Path, img: np.ndarray, quality: int = 92) -> None:
+    """Write a float32 linear image as HEIC with sRGB gamma and ICC profile."""
+    try:
+        from pillow_heif import register_heif_opener
+        register_heif_opener()
+    except ImportError:
+        raise RuntimeError(
+            "pillow-heif not installed. Install with: pip install pillow-heif"
+        )
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rgb = _linear_to_srgb_uint8(img)
+    pil = Image.fromarray(rgb, "RGB")
+    pil.info["icc_profile"] = _get_srgb_icc()
+    pil.save(str(path), "HEIF", quality=quality)
