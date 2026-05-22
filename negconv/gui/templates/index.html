@@ -78,7 +78,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 
 <div id="sidebar">
 
-  <!-- File load -->
+  <!-- File -->
   <div class="section">
     <h2>File</h2>
     <div id="file-row">
@@ -89,28 +89,18 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <div id="status">No image loaded</div>
   </div>
 
-  <!-- Eyedropper -->
+  <!-- Dmin -->
   <div class="section">
-    <h2>Dmin (film base)</h2>
+    <h2>Film Base (Dmin)</h2>
     <div style="display:flex;gap:6px;align-items:center;">
       <button class="btn" id="btn-pick">Pick Dmin</button>
-      <span style="font-size:0.85em;">Click film base area</span>
+      <span style="font-size:0.85em;">Click film base</span>
     </div>
     <div style="display:flex;gap:8px;margin-top:4px;">
       <label>R <input type="number" id="dmin-r" class="readonly-dmin" step="0.001" min="0.01" max="2.0" value="" readonly></label>
       <label>G <input type="number" id="dmin-g" class="readonly-dmin" step="0.001" min="0.01" max="2.0" value="" readonly></label>
       <label>B <input type="number" id="dmin-b" class="readonly-dmin" step="0.001" min="0.01" max="2.0" value="" readonly></label>
     </div>
-  </div>
-
-  <!-- Crop -->
-  <div class="section">
-    <h2>Crop</h2>
-    <div style="display:flex;gap:6px;">
-      <button class="btn" id="btn-crop">Set Crop</button>
-      <button class="btn" id="btn-clear-crop">Clear Crop</button>
-    </div>
-    <div id="crop-info" style="font-size:0.8em;color:#888;display:none;"></div>
   </div>
 
   <!-- Presets -->
@@ -122,53 +112,58 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     </div>
   </div>
 
-  <!-- Invert -->
+  <!-- Tone -->
   <div class="section">
-    <button class="btn btn-primary" id="btn-invert" style="width:100%">Invert</button>
-    <div style="display:flex;gap:6px;margin-top:4px;">
-      <button class="btn" id="btn-before-after" style="flex:1" title="Toggle between original and inverted (\)">Before/After</button>
-      <button class="btn" id="btn-histogram" style="flex:0" title="Toggle RGB histogram (H)">Hist</button>
-    </div>
-  </div>
-
-  <!-- Parameters -->
-  <div class="section">
-    <h2>Parameters</h2>
+    <h2>Tone</h2>
     <label><span class="lbl" data-target="sl-dmax" title="Film dynamic range in optical density units. Controls how far the density-to-print mapping stretches. Typical: 1.5–2.5 (B&W up to 3.0). Higher = more contrast. Range: 0.5–4.0. Alt+click to reset.">Dmax</span> <input type="range" id="sl-dmax" min="0.5" max="4.0" step="0.01" value="1.6" data-default="1.6"> <input type="number" id="num-dmax" min="0.5" max="4.0" step="0.01" value="1.60"></label>
     <label><span class="lbl" data-target="sl-gamma" title="Paper grade / contrast. Simulates photographic paper gamma. Higher = harder paper (more contrast). Color film: 3–5, B&W: 4–6. Range: 1.0–8.0. Alt+click to reset.">Gamma</span> <input type="range" id="sl-gamma" min="1.0" max="8.0" step="0.1" value="4.0" data-default="4.0"> <input type="number" id="num-gamma" min="1.0" max="8.0" step="0.1" value="4.0"></label>
-    <label><span class="lbl" data-target="sl-exposure" title="Paper exposure strength. Controls overall brightness of the print. Increase to brighten shadows, decrease to deepen them. Default 0.92 for typical film. Range: 0.1–2.0. Alt+click to reset.">Exposure</span> <input type="range" id="sl-exposure" min="0.1" max="2.0" step="0.01" value="0.92" data-default="0.9245"> <input type="number" id="num-exposure" min="0.1" max="2.0" step="0.01" value="0.92"></label>
-    <label><span class="lbl" data-target="sl-black" title="Paper black point offset. Sets the minimum density (D-min) of the simulated paper. Increase to lift shadows, decrease for deeper blacks. Default 0.08. Range: 0.0–0.5. Alt+click to reset.">Black</span> <input type="range" id="sl-black" min="0.0" max="0.5" step="0.01" value="0.08" data-default="0.0755"> <input type="number" id="num-black" min="0.0" max="0.5" step="0.01" value="0.08"></label>
-    <label><span class="lbl" data-target="sl-softclip" title="Highlight roll-off. Prevents harsh clipping of bright highlights. 1.0 = no soft clip, lower = earlier/gentler rolloff. Default 0.75. Range: 0.0–1.0. Alt+click to reset.">Soft clip</span> <input type="range" id="sl-softclip" min="0.0" max="1.0" step="0.01" value="0.75" data-default="0.75"> <input type="number" id="num-softclip" min="0.0" max="1.0" step="0.01" value="0.75"></label>
-    <label><span class="lbl" data-target="sl-offset" title="Density offset in log space. Shifts the entire density curve up or down. Primarily for scanner black-point calibration — usually left at -0.05. Range: -0.5–0.5. Alt+click to reset.">Offset</span> <input type="range" id="sl-offset" min="-0.5" max="0.5" step="0.01" value="-0.05" data-default="-0.05"> <input type="number" id="num-offset" min="-0.5" max="0.5" step="0.01" value="-0.05"></label>
+    <label><span class="lbl" data-target="sl-exposure" title="Paper exposure strength. Controls overall brightness. Increase to brighten shadows, decrease to deepen them. Default 0.92. Range: 0.1–2.0. Alt+click to reset.">Exposure</span> <input type="range" id="sl-exposure" min="0.1" max="2.0" step="0.01" value="0.92" data-default="0.9245"> <input type="number" id="num-exposure" min="0.1" max="2.0" step="0.01" value="0.92"></label>
+    <label><span class="lbl" data-target="sl-black" title="Paper black point. Sets minimum density of the simulated paper. Increase to lift shadows. Default 0.08. Range: 0.0–0.5. Alt+click to reset.">Black</span> <input type="range" id="sl-black" min="0.0" max="0.5" step="0.01" value="0.08" data-default="0.0755"> <input type="number" id="num-black" min="0.0" max="0.5" step="0.01" value="0.08"></label>
+    <label><span class="lbl" data-target="sl-softclip" title="Highlight roll-off. 1.0 = no soft clip, lower = gentler rolloff. Default 0.75. Range: 0.0–1.0. Alt+click to reset.">Soft clip</span> <input type="range" id="sl-softclip" min="0.0" max="1.0" step="0.01" value="0.75" data-default="0.75"> <input type="number" id="num-softclip" min="0.0" max="1.0" step="0.01" value="0.75"></label>
+    <label><span class="lbl" data-target="sl-offset" title="Density offset in log space. Shifts the entire density curve. Usually left at -0.05. Range: -0.5–0.5. Alt+click to reset.">Offset</span> <input type="range" id="sl-offset" min="-0.5" max="0.5" step="0.01" value="-0.05" data-default="-0.05"> <input type="number" id="num-offset" min="-0.5" max="0.5" step="0.01" value="-0.05"></label>
   </div>
 
-  <div class="section">
-    <h2>White Balance High</h2>
-    <label><span class="lbl" data-target="sl-wbh-r" title="Highlight white balance — Red channel. Multiplier for the red channel in highlight densities. 1.0 = neutral. Adjust to correct color casts in bright areas. Range: 0.5–2.0. Alt+click to reset.">R</span> <input type="range" id="sl-wbh-r" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-r" min="0.5" max="2.0" step="0.01" value="1.00"></label>
-    <label><span class="lbl" data-target="sl-wbh-g" title="Highlight white balance — Green channel. Multiplier for the green channel in highlight densities. 1.0 = neutral. Range: 0.5–2.0. Alt+click to reset.">G</span> <input type="range" id="sl-wbh-g" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-g" min="0.5" max="2.0" step="0.01" value="1.00"></label>
-    <label><span class="lbl" data-target="sl-wbh-b" title="Highlight white balance — Blue channel. Multiplier for the blue channel in highlight densities. 1.0 = neutral. Range: 0.5–2.0. Alt+click to reset.">B</span> <input type="range" id="sl-wbh-b" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-b" min="0.5" max="2.0" step="0.01" value="1.00"></label>
-  </div>
+  <!-- White Balance (collapsible) -->
+  <details class="section">
+    <summary><h2 style="display:inline;cursor:pointer;">White Balance</h2></summary>
+    <div style="margin-top:6px;">
+      <div style="font-size:0.8em;color:#777;margin-bottom:4px;">Highlight</div>
+      <label><span class="lbl" data-target="sl-wbh-r" title="Highlight WB — Red. 1.0 = neutral. Range: 0.5–2.0. Alt+click to reset.">R</span> <input type="range" id="sl-wbh-r" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-r" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+      <label><span class="lbl" data-target="sl-wbh-g" title="Highlight WB — Green. 1.0 = neutral. Range: 0.5–2.0. Alt+click to reset.">G</span> <input type="range" id="sl-wbh-g" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-g" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+      <label><span class="lbl" data-target="sl-wbh-b" title="Highlight WB — Blue. 1.0 = neutral. Range: 0.5–2.0. Alt+click to reset.">B</span> <input type="range" id="sl-wbh-b" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-b" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+      <div style="font-size:0.8em;color:#777;margin:4px 0;">Shadow</div>
+      <label><span class="lbl" data-target="sl-wbl-r" title="Shadow WB — Red. Range: 0.5–2.0. Alt+click to reset.">R</span> <input type="range" id="sl-wbl-r" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-r" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+      <label><span class="lbl" data-target="sl-wbl-g" title="Shadow WB — Green. Range: 0.5–2.0. Alt+click to reset.">G</span> <input type="range" id="sl-wbl-g" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-g" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+      <label><span class="lbl" data-target="sl-wbl-b" title="Shadow WB — Blue. Range: 0.5–2.0. Alt+click to reset.">B</span> <input type="range" id="sl-wbl-b" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-b" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+    </div>
+  </details>
 
+  <!-- Crop -->
   <div class="section">
-    <h2>White Balance Low</h2>
-    <label><span class="lbl" data-target="sl-wbl-r" title="Shadow white balance — Red channel. Multiplier for the red channel in shadow densities. Corrects color casts in dark areas. Range: 0.5–2.0. Alt+click to reset.">R</span> <input type="range" id="sl-wbl-r" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-r" min="0.5" max="2.0" step="0.01" value="1.00"></label>
-    <label><span class="lbl" data-target="sl-wbl-g" title="Shadow white balance — Green channel. Multiplier for the green channel in shadow densities. Range: 0.5–2.0. Alt+click to reset.">G</span> <input type="range" id="sl-wbl-g" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-g" min="0.5" max="2.0" step="0.01" value="1.00"></label>
-    <label><span class="lbl" data-target="sl-wbl-b" title="Shadow white balance — Blue channel. Multiplier for the blue channel in shadow densities. Range: 0.5–2.0. Alt+click to reset.">B</span> <input type="range" id="sl-wbl-b" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-b" min="0.5" max="2.0" step="0.01" value="1.00"></label>
-  </div>
-    <label><span class="lbl" data-target="sl-wbl-g">G</span> <input type="range" id="sl-wbl-g" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-g" min="0.5" max="2.0" step="0.01" value="1.00"></label>
-    <label><span class="lbl" data-target="sl-wbl-b">B</span> <input type="range" id="sl-wbl-b" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbl-b" min="0.5" max="2.0" step="0.01" value="1.00"></label>
+    <h2>Crop</h2>
+    <div style="display:flex;gap:6px;">
+      <button class="btn" id="btn-crop">Set Crop</button>
+      <button class="btn" id="btn-clear-crop">Clear Crop</button>
+    </div>
+    <div id="crop-info" style="font-size:0.8em;color:#888;display:none;"></div>
   </div>
 
   <!-- Export -->
   <div class="section">
     <h2>Export</h2>
     <div style="display:flex;gap:6px;">
-      <button class="btn" id="btn-export-16" style="flex:1">TIFF 16-bit</button>
-      <button class="btn" id="btn-export-32" style="flex:1">TIFF 32f</button>
+      <button class="btn btn-primary" id="btn-export-16" style="flex:1">TIFF 16-bit</button>
+      <button class="btn btn-primary" id="btn-export-32" style="flex:1">TIFF 32f</button>
     </div>
   </div>
 
-  <div style="font-size:0.7em;color:#555;margin-top:8px;">Alt+click label to reset</div>
+  <!-- Toolbar -->
+  <div style="display:flex;gap:6px;margin-top:auto;padding-top:8px;border-top:1px solid #333;">
+    <button class="btn" id="btn-before-after" style="flex:1" title="Before/After (\)">B/A</button>
+    <button class="btn" id="btn-histogram" style="flex:1" title="Histogram (H)">Hist</button>
+    <button class="btn" id="btn-invert" style="flex:1" title="Re-invert">Re-inv</button>
+  </div>
+  <div style="font-size:0.7em;color:#555;">Alt+click label to reset | ? for shortcuts</div>
 </div>
 
 <script>
@@ -215,11 +210,7 @@ function setLoading(on) {
 
 // Single-line status
 function updateStatus() {
-  const dminR = $("dmin-r").value;
-  const dminG = $("dmin-g").value;
-  const dminB = $("dmin-b").value;
   let text = currentFilename ? `${currentFilename}  ${currentDims[0]}x${currentDims[1]}` : "No image loaded";
-  if (dminR) text += ` | Dmin: R=${parseFloat(dminR).toFixed(4)} G=${parseFloat(dminG).toFixed(4)} B=${parseFloat(dminB).toFixed(4)}`;
   $("status").textContent = text;
 }
 
@@ -578,6 +569,10 @@ window.addEventListener("mouseup", (e) => {
     setLoading(false);
     if (data.error) { alert(data.error); return; }
     cropRectOrig = data.crop_rect;
+    // Auto-exit crop mode after successful crop
+    cropMode = false;
+    $("btn-crop").classList.remove("btn-active");
+    img.style.cursor = pickingDmin ? "crosshair" : "default";
     img.src = "/api/preview/result?" + Date.now();
     updateUI(data.params);
     updateCropOverlay();
