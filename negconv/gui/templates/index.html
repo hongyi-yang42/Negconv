@@ -82,7 +82,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <div class="section">
     <h2>File</h2>
     <div id="file-row">
-      <input id="filepath" type="text" placeholder="/path/to/scan.ARW" spellcheck="false">
+      <input id="filepath" type="text" placeholder="/path/to/scan.ARW" spellcheck="false" list="recent-files">
+      <datalist id="recent-files"></datalist>
       <button class="btn btn-primary" id="btn-load">Load</button>
       <button class="btn" id="btn-clear">Clear</button>
     </div>
@@ -187,6 +188,31 @@ const $ = id => document.getElementById(id);
 const img = $("preview");
 const viewerImg = $("viewer-img");
 
+// Flash a status message for 2 seconds
+let statusFlashTimer = null;
+function flashStatus(msg) {
+  const st = $("status");
+  const orig = st.textContent;
+  st.textContent = msg;
+  clearTimeout(statusFlashTimer);
+  statusFlashTimer = setTimeout(() => { st.textContent = orig; }, 2000);
+}
+
+// Load recent files into datalist
+function loadRecentFiles() {
+  fetch("/api/recent").then(r => r.json()).then(files => {
+    const dl = $("recent-files");
+    dl.innerHTML = "";
+    files.forEach(f => {
+      const opt = document.createElement("option");
+      opt.value = f.path;
+      opt.label = f.path.split("/").pop();
+      dl.appendChild(opt);
+    });
+  }).catch(() => {});
+}
+loadRecentFiles();
+
 // Slider↔number input pairs
 const sliderPairs = [
   { sl: "sl-dmax",     num: "num-dmax" },
@@ -258,7 +284,10 @@ function pushParams() {
     method: "POST",
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify(gatherParams()),
-  }).then(() => doInvert());
+  }).then(r => r.json()).then(data => {
+    if (data.auto_saved) flashStatus("Auto-saved");
+    doInvert();
+  });
 }
 
 function onParamChange() {
@@ -369,6 +398,8 @@ $("btn-load").addEventListener("click", () => {
     updateStatus();
     updateCropOverlay();
     fitToWindow();
+    if (data.sidecar_loaded) flashStatus("Loaded from sidecar");
+    loadRecentFiles();
   })
   .catch(e => { setLoading(false); alert("Load failed: " + e); });
 });
@@ -416,6 +447,7 @@ img.addEventListener("click", (e) => {
     updateUI(data.params);
     img.src = "/api/preview/result?" + Date.now();
     updateStatus();
+    if (data.auto_saved) flashStatus("Auto-saved");
   })
   .catch(e => { setLoading(false); alert("Pick failed: " + e); });
 });
@@ -500,6 +532,7 @@ $("btn-clear-crop").addEventListener("click", () => {
     img.src = "/api/preview/result?" + Date.now();
     updateUI(data.params);
     updateCropOverlay();
+    if (data.auto_saved) flashStatus("Auto-saved");
   })
   .catch(e => { setLoading(false); alert("Clear crop failed: " + e); });
 });
@@ -576,6 +609,7 @@ window.addEventListener("mouseup", (e) => {
     img.src = "/api/preview/result?" + Date.now();
     updateUI(data.params);
     updateCropOverlay();
+    if (data.auto_saved) flashStatus("Auto-saved");
   })
   .catch(e => { setLoading(false); alert("Crop failed: " + e); });
 });
@@ -812,6 +846,9 @@ document.addEventListener("keydown", (e) => {
   const tag = e.target.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
+  // When overlay visible, only allow ? and Esc
+  if (shortcutOverlayVisible && e.key !== "?" && e.key !== "Escape") return;
+
   if (e.key === "h" || e.key === "H") {
     toggleHistogram();
   } else if (e.key === "\\") {
@@ -826,8 +863,71 @@ document.addEventListener("keydown", (e) => {
   } else if (e.key === " ") {
     e.preventDefault();
     fitToWindow();
+  } else if (e.key === "?") {
+    toggleShortcutOverlay();
+  } else if (e.key === "1") {
+    $("btn-preset-color").click();
+  } else if (e.key === "2") {
+    $("btn-preset-bw").click();
+  } else if (e.ctrlKey && e.key === "s") {
+    e.preventDefault();
+    fetch("/api/auto-save", {method: "POST"}).then(() => {
+      $("status").textContent = currentFilename ? `${currentFilename}  ${currentDims[0]}x${currentDims[1]} — Saved` : "";
+      setTimeout(updateStatus, 2000);
+    });
+  } else if (e.ctrlKey && e.key === "e") {
+    e.preventDefault();
+    $("btn-export-16").click();
   }
 });
+
+// ---- Shortcut help overlay ----
+let shortcutOverlayVisible = false;
+function toggleShortcutOverlay() {
+  shortcutOverlayVisible = !shortcutOverlayVisible;
+  $("shortcut-overlay").classList.toggle("visible", shortcutOverlayVisible);
+}
+</script>
+
+<!-- Shortcut overlay -->
+<div id="shortcut-overlay" style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.8);z-index:1000;justify-content:center;align-items:center;">
+  <div style="background:#222;border-radius:8px;padding:24px 32px;color:#ddd;font-size:0.9em;max-width:400px;">
+    <h2 style="margin-bottom:12px;font-size:1.1em;color:#999;text-transform:uppercase;letter-spacing:0.05em;">Keyboard Shortcuts</h2>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">E</td><td>Eyedropper (pick Dmin)</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">C</td><td>Crop mode</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">H</td><td>Toggle histogram</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">\</td><td>Before / After</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Space</td><td>Fit to window</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">1</td><td>Preset: Color (C-41)</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">2</td><td>Preset: B&W</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+S</td><td>Save params</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+E</td><td>Export</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Esc</td><td>Cancel mode / close</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">?</td><td>This help</td></tr>
+    </table>
+  </div>
+</div>
+<script>
+// Toggle overlay visibility via CSS
+const so = $("shortcut-overlay");
+const soStyle = so.style;
+const origToggle = toggleShortcutOverlay;
+toggleShortcutOverlay = function() {
+  shortcutOverlayVisible = !shortcutOverlayVisible;
+  if (shortcutOverlayVisible) {
+    soStyle.display = "flex";
+  } else {
+    soStyle.display = "none";
+  }
+};
+// Close on Esc when overlay visible
+document.addEventListener("keydown", (e) => {
+  if (shortcutOverlayVisible && e.key === "Escape") {
+    toggleShortcutOverlay();
+    e.stopPropagation();
+  }
+}, true);
 </script>
 </body>
 </html>

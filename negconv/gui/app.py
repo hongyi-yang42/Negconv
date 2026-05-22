@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -15,6 +16,7 @@ from ..pipeline import invert
 from .viewer import make_preview
 
 PREVIEW_MAX_WIDTH = 1200
+RECENT_FILE = Path.home() / ".negconv" / "recent.json"
 
 
 @dataclass
@@ -62,6 +64,82 @@ def _get_pipeline_input(state: GuiState) -> np.ndarray:
     return state.original_img
 
 
+def _sidecar_path(file_path: str) -> str:
+    """Return the sidecar path for a given source file."""
+    return str(file_path) + ".negconv.json"
+
+
+def _auto_save(state: GuiState) -> bool:
+    """Save params + crop_rect to sidecar. Returns True if saved."""
+    if not state.file_path:
+        return False
+    sp = _sidecar_path(state.file_path)
+    data = {
+        "dmin": state.params.dmin.tolist(),
+        "d_max": state.params.d_max,
+        "wb_high": state.params.wb_high.tolist(),
+        "wb_low": state.params.wb_low.tolist(),
+        "offset": state.params.offset,
+        "exposure": state.params.exposure,
+        "black": state.params.black,
+        "gamma": state.params.gamma,
+        "soft_clip": state.params.soft_clip,
+    }
+    if state.crop_rect is not None:
+        data["crop_rect"] = state.crop_rect
+    Path(sp).parent.mkdir(parents=True, exist_ok=True)
+    with open(sp, "w") as f:
+        json.dump(data, f, indent=2)
+    return True
+
+
+def _load_sidecar(file_path: str) -> dict | None:
+    """Load sidecar JSON if it exists. Returns dict or None."""
+    sp = _sidecar_path(file_path)
+    if os.path.isfile(sp):
+        with open(sp) as f:
+            return json.load(f)
+    return None
+
+
+def _apply_sidecar(state: GuiState, data: dict) -> None:
+    """Apply sidecar data to state params and crop_rect."""
+    p = state.params
+    if "dmin" in data:
+        p.dmin = np.array(data["dmin"], dtype=np.float32)
+    for key in ("d_max", "exposure", "black", "gamma", "soft_clip", "offset"):
+        if key in data:
+            setattr(p, key, float(data[key]))
+    for key in ("wb_high", "wb_low"):
+        if key in data:
+            setattr(p, key, np.array(data[key], dtype=np.float32))
+    state.crop_rect = data.get("crop_rect", None)
+
+
+def _load_recent() -> list[dict]:
+    """Load recent files list from disk."""
+    if RECENT_FILE.is_file():
+        with open(RECENT_FILE) as f:
+            return json.load(f)
+    return []
+
+
+def _save_recent(recent: list[dict]) -> None:
+    """Save recent files list to disk."""
+    RECENT_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(RECENT_FILE, "w") as f:
+        json.dump(recent, f, indent=2)
+
+
+def _add_recent(file_path: str) -> None:
+    """Add a file to the recent list (newest first, max 10)."""
+    recent = _load_recent()
+    # Remove duplicates
+    recent = [r for r in recent if r["path"] != file_path]
+    recent.insert(0, {"path": file_path, "timestamp": datetime.now(timezone.utc).isoformat()})
+    _save_recent(recent[:10])
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
     state = GuiState()
@@ -85,6 +163,14 @@ def create_app() -> Flask:
         state.original_img = img
         state.file_path = path
         state.params = auto_detect(img)
+        state.crop_rect = None
+
+        # Auto-load sidecar if present
+        sidecar_loaded = False
+        sidecar = _load_sidecar(path)
+        if sidecar is not None:
+            _apply_sidecar(state, sidecar)
+            sidecar_loaded = True
 
         state.orig_preview = make_preview(img, PREVIEW_MAX_WIDTH)
 
@@ -95,15 +181,20 @@ def create_app() -> Flask:
         )
         state.preview_dims = (pil_preview.width, pil_preview.height)
 
+        # Record in recent files
+        _add_recent(path)
+
         h, w = img.shape[:2]
-        return jsonify({
+        result = {
             "preview": "/api/preview/orig",
             "params": _params_to_dict(state.params, state.crop_rect),
             "crop_rect": state.crop_rect,
             "filename": Path(path).name,
             "dims": [h, w],
             "preview_dims": list(state.preview_dims),
-        })
+            "sidecar_loaded": sidecar_loaded,
+        }
+        return jsonify(result)
 
     @app.route("/api/preview/orig")
     def api_preview_orig():
@@ -170,6 +261,7 @@ def create_app() -> Flask:
             "dmin": dmin.tolist(),
             "preview": "/api/preview/result",
             "params": _params_to_dict(state.params, state.crop_rect),
+            "auto_saved": _auto_save(state),
         })
 
     @app.route("/api/params", methods=["GET"])
@@ -180,7 +272,8 @@ def create_app() -> Flask:
     def api_set_params():
         data = request.get_json(force=True)
         _update_params_from_dict(state.params, data)
-        return jsonify(_params_to_dict(state.params, state.crop_rect))
+        saved = _auto_save(state)
+        return jsonify({**_params_to_dict(state.params, state.crop_rect), "auto_saved": saved})
 
     @app.route("/api/preset/<name>", methods=["POST"])
     def api_preset(name):
@@ -224,6 +317,7 @@ def create_app() -> Flask:
             "crop_rect": state.crop_rect,
             "preview": "/api/preview/result",
             "params": _params_to_dict(state.params, state.crop_rect),
+            "auto_saved": _auto_save(state),
         })
 
     @app.route("/api/crop", methods=["DELETE"])
@@ -243,6 +337,7 @@ def create_app() -> Flask:
             "crop_rect": None,
             "preview": "/api/preview/result",
             "params": _params_to_dict(state.params, state.crop_rect),
+            "auto_saved": _auto_save(state),
         })
 
     @app.route("/api/histogram")
@@ -258,6 +353,18 @@ def create_app() -> Flask:
             counts, _ = np.histogram(arr[:, :, i], bins=256, range=(0, 256))
             hist[ch] = counts.tolist()
         return jsonify(hist)
+
+    @app.route("/api/auto-save", methods=["POST"])
+    def api_auto_save():
+        saved = _auto_save(state)
+        return jsonify({"auto_saved": saved})
+
+    @app.route("/api/recent")
+    def api_recent():
+        recent = _load_recent()
+        # Filter out paths that no longer exist
+        recent = [r for r in recent if os.path.isfile(r.get("path", ""))]
+        return jsonify(recent)
 
     @app.route("/api/export", methods=["POST"])
     def api_export():

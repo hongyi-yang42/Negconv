@@ -371,3 +371,93 @@ class TestVisualFeedback:
         params2 = resp2.get_json()
         assert params1["gamma"] == params2["gamma"]
         assert params1["dmin"] == params2["dmin"]
+
+
+class TestAutoSaveSidecar:
+    def test_auto_save_sidecar_on_param_change(self):
+        """Changing params creates a sidecar .negconv.json file."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+
+        with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+            data = np.full((100, 100, 3), 30000, dtype=np.uint16)
+            tifffile.imwrite(f.name, data, photometric="rgb")
+            path = f.name
+
+        try:
+            client.post("/api/load", json={"path": path})
+            resp = client.post("/api/params", json={"gamma": 6.0})
+            assert resp.status_code == 200
+            assert resp.get_json()["auto_saved"] is True
+
+            sidecar_path = path + ".negconv.json"
+            assert os.path.isfile(sidecar_path)
+            with open(sidecar_path) as sf:
+                saved = json.load(sf)
+            assert abs(saved["gamma"] - 6.0) < 0.01
+        finally:
+            os.unlink(path)
+            sidecar_path = path + ".negconv.json"
+            if os.path.isfile(sidecar_path):
+                os.unlink(sidecar_path)
+
+    def test_auto_load_sidecar_on_open(self):
+        """Opening a file with an existing sidecar restores params."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+
+        with tempfile.NamedTemporaryFile(suffix=".tif", delete=False) as f:
+            data = np.full((100, 100, 3), 30000, dtype=np.uint16)
+            tifffile.imwrite(f.name, data, photometric="rgb")
+            path = f.name
+
+        try:
+            # Write a sidecar with custom gamma
+            sidecar_path = path + ".negconv.json"
+            with open(sidecar_path, "w") as sf:
+                json.dump({"gamma": 7.5}, sf)
+
+            resp = client.post("/api/load", json={"path": path})
+            assert resp.status_code == 200
+            result = resp.get_json()
+            assert result.get("sidecar_loaded") is True
+            assert abs(result["params"]["gamma"] - 7.5) < 0.01
+        finally:
+            os.unlink(path)
+            if os.path.isfile(sidecar_path):
+                os.unlink(sidecar_path)
+
+
+class TestRecentFiles:
+    def test_recent_files_persisted(self, tmp_path):
+        """Loading a file adds it to recent files list."""
+        from negconv.gui.app import _load_recent, _save_recent, RECENT_FILE
+
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+
+        tif_path = str(tmp_path / "test.tif")
+        data = np.full((50, 50, 3), 30000, dtype=np.uint16)
+        tifffile.imwrite(tif_path, data, photometric="rgb")
+
+        client.post("/api/load", json={"path": tif_path})
+        resp = client.get("/api/recent")
+        assert resp.status_code == 200
+        recent = resp.get_json()
+        paths = [r["path"] for r in recent]
+        assert tif_path in paths
+
+
+class TestShortcutOverlay:
+    def test_shortcut_overlay_toggle(self):
+        """Index page contains the shortcut overlay HTML."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert b"shortcut-overlay" in resp.data
+        assert b"Keyboard Shortcuts" in resp.data
