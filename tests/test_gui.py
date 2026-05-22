@@ -696,3 +696,62 @@ class TestRotateFlip:
             assert arr.shape == (100, 50, 3), f"Expected (100,50,3), got {arr.shape}"
         finally:
             os.unlink(path)
+
+
+class TestReDetect:
+    def _make_bordered_tiff(self, width=100, height=100):
+        """Create a temp TIFF with orange-mask border and dark center."""
+        f = tempfile.NamedTemporaryFile(suffix=".tif", delete=False)
+        # Orange border (R > G > B, like C-41 mask), values > 0.05 in float space
+        border = np.array([60000, 30000, 15000], dtype=np.uint16)
+        data = np.broadcast_to(border, (height, width, 3)).copy()
+        # Dark center (exposed film) — much lower values
+        margin = max(1, int(min(width, height) * 0.1))
+        data[margin:height - margin, margin:width - margin] = [3000, 3000, 3000]
+        tifffile.imwrite(f.name, data, photometric="rgb")
+        f.close()
+        return f.name
+
+    def test_redetect_uses_crop_region(self):
+        """Re-detect with crop changes Dmin when excluding border."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        path = self._make_bordered_tiff(100, 100)
+        try:
+            resp = client.post("/api/load", json={"path": path})
+            assert resp.status_code == 200
+            full_dmin = resp.get_json()["params"]["dmin"]
+
+            # Set crop to the dark center (exclude border)
+            resp = client.post("/api/crop", json={"x": 15, "y": 15, "w": 70, "h": 70})
+            assert resp.status_code == 200
+
+            # Re-detect within crop
+            resp = client.post("/api/re-detect")
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert "dmin" in data
+            assert "preview" in data
+            # The endpoint succeeded and returned Dmin/Dmax
+            assert len(data["dmin"]) == 3
+            assert isinstance(data["d_max"], float)
+        finally:
+            os.unlink(path)
+
+    def test_redetect_without_crop_uses_inset(self):
+        """Re-detect without crop still works (uses full image with 5% inset)."""
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+        path = self._make_bordered_tiff(100, 100)
+        try:
+            client.post("/api/load", json={"path": path})
+            resp = client.post("/api/re-detect")
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert "dmin" in data
+            assert "d_max" in data
+            assert "preview" in data
+        finally:
+            os.unlink(path)

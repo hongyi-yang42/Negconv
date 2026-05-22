@@ -412,6 +412,43 @@ def create_app() -> Flask:
             "auto_saved": _auto_save(state),
         })
 
+    @app.route("/api/re-detect", methods=["POST"])
+    def api_redetect():
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+
+        img = state.original_img
+
+        # If crop is set, scope to cropped region
+        if state.crop_rect:
+            r = state.crop_rect
+            img = img[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]]
+
+        # Apply 5% inset margin to exclude border artifacts
+        h, w = img.shape[:2]
+        mx = max(1, int(w * 0.05))
+        my = max(1, int(h * 0.05))
+        img_inner = img[my:h - my, mx:w - mx]
+
+        new_params = auto_detect(img_inner)
+        state.params.dmin = new_params.dmin
+        state.params.d_max = new_params.d_max
+
+        try:
+            result = invert(_get_pipeline_input(state), state.params)
+            state.result_preview = make_preview(result, PREVIEW_MAX_WIDTH)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+
+        saved = _auto_save(state)
+        return jsonify({
+            "dmin": state.params.dmin.tolist(),
+            "d_max": state.params.d_max,
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "auto_saved": saved,
+        })
+
     @app.route("/api/histogram")
     def api_histogram():
         if not state.result_preview:

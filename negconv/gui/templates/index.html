@@ -95,7 +95,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <h2>Film Base (Dmin)</h2>
     <div style="display:flex;gap:6px;align-items:center;">
       <button class="btn" id="btn-pick">Pick Dmin</button>
-      <span style="font-size:0.85em;">Click film base</span>
+      <button class="btn" id="btn-redetect" title="Re-run auto-detect within crop (D)">Re-detect</button>
     </div>
     <div style="display:flex;gap:8px;margin-top:4px;">
       <label>R <input type="number" id="dmin-r" class="readonly-dmin" step="0.001" min="0.01" max="2.0" value="" readonly></label>
@@ -552,6 +552,22 @@ img.addEventListener("click", (e) => {
   .catch(e => { setLoading(false); alert("Pick failed: " + e); });
 });
 
+// Re-detect
+$("btn-redetect").addEventListener("click", () => {
+  setLoading(true);
+  fetch("/api/re-detect", {method: "POST"})
+  .then(r => r.json())
+  .then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    updateUI(data.params);
+    img.src = "/api/preview/result?" + Date.now();
+    if (data.auto_saved) flashStatus("Auto-saved");
+    updateStatus();
+  })
+  .catch(e => { setLoading(false); alert("Re-detect failed: " + e); });
+});
+
 // ---- Crop tool ----
 // Convert client coords to preview pixel coords (accounts for CSS transform)
 function clientToPreview(cx, cy) {
@@ -631,6 +647,10 @@ $("btn-clear-crop").addEventListener("click", () => {
     setLoading(false);
     if (data.error) { alert(data.error); return; }
     cropRectOrig = null;
+    const drawEl = $("crop-drawing");
+    drawEl.style.display = "none";
+    drawEl.style.width = "0";
+    drawEl.style.height = "0";
     img.src = "/api/preview/result?" + Date.now();
     updateUI(data.params);
     updateCropOverlay();
@@ -708,6 +728,11 @@ window.addEventListener("mouseup", (e) => {
     cropMode = false;
     $("btn-crop").classList.remove("btn-active");
     img.style.cursor = pickingDmin ? "crosshair" : "default";
+    // Ensure drawing rect is fully reset
+    const drawEl = $("crop-drawing");
+    drawEl.style.display = "none";
+    drawEl.style.width = "0";
+    drawEl.style.height = "0";
     img.src = "/api/preview/result?" + Date.now();
     updateUI(data.params);
     updateCropOverlay();
@@ -980,6 +1005,8 @@ document.addEventListener("keydown", (e) => {
     $("btn-pick").click();
   } else if (e.key === "c" || e.key === "C") {
     $("btn-crop").click();
+  } else if (e.key === "d" || e.key === "D") {
+    $("btn-redetect").click();
   } else if (e.key === "Escape") {
     if (pickingDmin) { $("btn-pick").click(); }
     if (cropMode) { $("btn-crop").click(); }
@@ -1025,6 +1052,7 @@ function toggleShortcutOverlay() {
     <table style="width:100%;border-collapse:collapse;">
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">E</td><td>Eyedropper (pick Dmin)</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">C</td><td>Crop mode</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">D</td><td>Re-detect in crop</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">H</td><td>Toggle histogram</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">\</td><td>Before / After</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Space</td><td>Fit to window</td></tr>
