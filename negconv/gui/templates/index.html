@@ -124,6 +124,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     </div>
   </div>
 
+  <!-- LUT -->
+  <div class="section">
+    <h2>Look LUT</h2>
+    <div style="display:flex;gap:6px;">
+      <input id="lut-path" type="text" placeholder="/path/to/film.cube" spellcheck="false" style="flex:1;background:#333;border:1px solid #444;color:#ddd;padding:4px 6px;border-radius:3px;font-size:0.85em;">
+      <button class="btn" id="btn-load-lut">Load</button>
+      <button class="btn" id="btn-clear-lut">Clear</button>
+    </div>
+    <div id="lut-info" style="font-size:0.8em;color:#888;display:none;"></div>
+  </div>
+
   <!-- Profiles -->
   <div class="section">
     <h2>Profiles</h2>
@@ -1148,6 +1159,49 @@ $("btn-delete-profile").addEventListener("click", () => {
     refreshProfiles();
     flashStatus(data.ok ? "Deleted profile: " + name : data.error);
   });
+});
+
+// ---- LUT ----
+$("btn-load-lut").addEventListener("click", () => {
+  const path = $("lut-path").value.trim();
+  if (!path) return;
+  setLoading(true);
+  fetch("/api/lut", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({path}),
+  })
+  .then(r => r.json())
+  .then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    $("lut-info").style.display = "block";
+    $("lut-info").textContent = "LUT: " + data.lut;
+    img.src = "/api/preview/result?" + Date.now();
+    updateUI(data.params);
+    flashStatus("Loaded LUT: " + data.lut);
+  })
+  .catch(e => { setLoading(false); alert("LUT load failed: " + e); });
+});
+
+$("btn-clear-lut").addEventListener("click", () => {
+  setLoading(true);
+  fetch("/api/lut", {method: "DELETE"})
+  .then(r => r.json())
+  .then(data => {
+    setLoading(false);
+    $("lut-info").style.display = "none";
+    $("lut-path").value = "";
+    if (data.error) { alert(data.error); return; }
+    img.src = "/api/preview/result?" + Date.now();
+    updateUI(data.params);
+    flashStatus("LUT cleared");
+  })
+  .catch(e => { setLoading(false); alert("LUT clear failed: " + e); });
+});
+
+$("lut-path").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("btn-load-lut").click();
 });
 
 // Export

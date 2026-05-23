@@ -19,6 +19,7 @@ from ..params import NegconvParams, auto_detect, save_params, load_params, PARAM
 from ..pipeline import invert
 from ..color import srgb_to_rec2020, rec2020_to_srgb
 from ..profiles import save_profile, load_profile, list_profiles, delete_profile
+from ..lut import parse_cube, apply_lut
 from .viewer import make_preview
 
 PREVIEW_MAX_WIDTH = 1200
@@ -141,6 +142,8 @@ class GuiState:
     carry_categories: dict = field(default_factory=lambda: {"tone": True, "wb": True, "film_base": False, "geometry": True})
     settings: dict = field(default_factory=lambda: dict(DEFAULT_SETTINGS))
     history: ParamHistory = field(default_factory=ParamHistory)
+    lut_path: str = ""
+    lut_data: dict | None = None
 
 
 def _sample_patch(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
@@ -371,8 +374,23 @@ def _run_pipeline(state: GuiState) -> None:
 
     Pipeline runs in Rec.2020 working space. Result is converted back to
     sRGB for preview and export (except TIFF-32f which stays in Rec.2020).
+
+    When a LUT is loaded, gamma/soft_clip are set to identity so stages 4+5
+    become no-ops, then the LUT is applied to the Stage 3 output.
     """
-    result = invert(_get_pipeline_input(state), state.params)
+    if state.lut_data is not None:
+        saved_gamma = state.params.gamma
+        saved_soft_clip = state.params.soft_clip
+        state.params.gamma = 1.0
+        state.params.soft_clip = 1.0
+        result = invert(_get_pipeline_input(state), state.params)
+        state.params.gamma = saved_gamma
+        state.params.soft_clip = saved_soft_clip
+        result = np.clip(result, 0.0, 1.0)
+        result = apply_lut(result, state.lut_data)
+    else:
+        result = invert(_get_pipeline_input(state), state.params)
+
     result_srgb = rec2020_to_srgb(result)
     result_srgb = np.clip(result_srgb, 0, None)
     max_w = state.settings.get("preview_max_width", PREVIEW_MAX_WIDTH)
@@ -1044,6 +1062,51 @@ def create_app() -> Flask:
         _save_settings(state.settings)
         return jsonify(state.settings)
 
+    # ---- LUT ----
+    @app.route("/api/lut", methods=["POST"])
+    def api_load_lut():
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+        data = request.get_json(force=True)
+        path = data.get("path", "").strip()
+        if not path or not os.path.isfile(path):
+            return jsonify({"error": f"LUT file not found: {path}"}), 400
+        try:
+            state.lut_data = parse_cube(path)
+            state.lut_path = path
+        except Exception as e:
+            return jsonify({"error": f"Failed to parse LUT: {e}"}), 400
+        try:
+            _run_pipeline(state)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+        _auto_save(state)
+        return jsonify({
+            "lut": Path(path).name,
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+        })
+
+    @app.route("/api/lut", methods=["DELETE"])
+    def api_clear_lut():
+        state.lut_data = None
+        state.lut_path = ""
+        if state.original_img is not None:
+            try:
+                _run_pipeline(state)
+            except Exception as e:
+                return jsonify({"error": f"Inversion failed: {e}"}), 500
+            _auto_save(state)
+        return jsonify({
+            "lut": None,
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+        })
+
+    @app.route("/api/lut")
+    def api_get_lut():
+        return jsonify({"lut": Path(state.lut_path).name if state.lut_path else None})
+
     @app.route("/api/thumb/<int:index>")
     def api_thumb(index):
         if index < 0 or index >= len(state.directory_files):
@@ -1064,7 +1127,18 @@ def create_app() -> Flask:
         stem = Path(state.file_path).stem if state.file_path else "output"
 
         try:
-            result = invert(_get_pipeline_input(state), state.params)
+            if state.lut_data is not None:
+                saved_gamma = state.params.gamma
+                saved_soft_clip = state.params.soft_clip
+                state.params.gamma = 1.0
+                state.params.soft_clip = 1.0
+                result = invert(_get_pipeline_input(state), state.params)
+                state.params.gamma = saved_gamma
+                state.params.soft_clip = saved_soft_clip
+                result = np.clip(result, 0.0, 1.0)
+                result = apply_lut(result, state.lut_data)
+            else:
+                result = invert(_get_pipeline_input(state), state.params)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
 
