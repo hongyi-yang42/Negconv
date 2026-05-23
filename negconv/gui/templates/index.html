@@ -207,8 +207,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <!-- Advanced -->
   <details class="section">
     <summary><h2 style="display:inline;cursor:pointer;">Advanced</h2></summary>
-    <div style="margin-top:6px;font-size:0.8em;color:#888;">
-      <div>Black level: <span id="black-level-info">—</span></div>
+    <div style="margin-top:6px;">
+      <label style="font-size:0.85em;margin-bottom:6px;"><input type="checkbox" id="chk-highlight"> Highlight recovery</label>
+      <div style="font-size:0.8em;color:#888;">Black level: <span id="black-level-info">—</span></div>
     </div>
   </details>
 
@@ -1538,6 +1539,23 @@ $("settings-modal").addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (settingsVisible && e.key === "Escape") { closeSettings(); e.stopPropagation(); }
 }, true);
+
+// ---- Highlight recovery ----
+$("chk-highlight").addEventListener("change", () => {
+  setLoading(true);
+  fetch("/api/highlight-recovery", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({enabled: $("chk-highlight").checked}),
+  })
+  .then(r => r.json())
+  .then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    img.src = "/api/preview/result?" + Date.now();
+  })
+  .catch(e => { setLoading(false); alert("Highlight recovery failed: " + e); });
+});
 </script>
 
 <!-- Right-click context menu for filmstrip -->

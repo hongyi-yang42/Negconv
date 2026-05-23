@@ -30,3 +30,70 @@ def srgb_to_rec2020(image: np.ndarray) -> np.ndarray:
 
 def rec2020_to_srgb(image: np.ndarray) -> np.ndarray:
     return convert_color_space(image, MATRIX_REC2020_TO_SRGB)
+
+
+def recover_highlights(img: np.ndarray, threshold: float = 0.99) -> np.ndarray:
+    """Reconstruct clipped channels from unclipped neighbors.
+
+    For pixels with 1-2 channels clipped (>= threshold), estimates the
+    clipped value using local 5x5 mean of fully-unclipped neighbor pixels
+    to preserve channel ratios. All-3-clipped pixels are left unchanged.
+    """
+    h, w, _ = img.shape
+    clipped = img >= threshold
+    n_clipped = clipped.sum(axis=2)
+
+    needs_fix = (n_clipped >= 1) & (n_clipped <= 2)
+    if not np.any(needs_fix):
+        return img
+
+    result = img.copy()
+    pad = 2
+
+    # Use cumulative sums for fast 5x5 box average over fully-unclipped pixels
+    good_mask = (n_clipped == 0).astype(np.float32)  # (H, W)
+    # Weighted sum: pixel values * good_mask for each channel, plus count
+    padded_g = np.pad(good_mask, ((pad, pad), (pad, pad)), mode="constant")
+    padded_v = np.pad(img * good_mask[:, :, np.newaxis],
+                      ((pad, pad), (pad, pad), (0, 0)), mode="constant")
+
+    # Cumulative sums on padded array
+    cs_v = padded_v.cumsum(axis=0).cumsum(axis=1)
+    cs_g = padded_g.cumsum(axis=0).cumsum(axis=1)
+
+    def _box_sum(cs, y0, y1, x0, x1):
+        return cs[y1, x1] - cs[y0, x1] - cs[y1, x0] + cs[y0, x0]
+
+    fix_y, fix_x = np.where(needs_fix)
+    for i in range(len(fix_y)):
+        fy, fx = fix_y[i], fix_x[i]
+        # Box in padded coords (centered on pixel)
+        r0, r1 = fy + pad - 2, fy + pad + 3
+        c0, c1 = fx + pad - 2, fx + pad + 3
+
+        sum_v = _box_sum(cs_v, r0, r1, c0, c1)  # (3,)
+        count = _box_sum(cs_g, r0, r1, c0, c1)
+
+        if count < 1.0:
+            continue
+
+        local_mean = sum_v / count
+        if local_mean.max() < 1e-6:
+            continue
+
+        pixel = img[fy, fx].copy()
+        unclipped = ~clipped[fy, fx]
+
+        # Scale local mean so unclipped channels match the pixel's actual values
+        local_unclipped_mean = local_mean[unclipped].mean()
+        if local_unclipped_mean < 1e-6:
+            continue
+        scale = pixel[unclipped].mean() / local_unclipped_mean
+
+        for c in range(3):
+            if clipped[fy, fx, c]:
+                pixel[c] = local_mean[c] * scale
+
+        result[fy, fx] = pixel
+
+    return result

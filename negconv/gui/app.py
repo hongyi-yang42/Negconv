@@ -17,7 +17,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 from ..io import apply_orientation, extract_exif, is_raw, read_image, write_image, write_jpeg, write_heic
 from ..params import NegconvParams, auto_detect, save_params, load_params, PARAM_CATEGORIES, carry_fields_for_categories
 from ..pipeline import invert
-from ..color import srgb_to_rec2020, rec2020_to_srgb
+from ..color import srgb_to_rec2020, rec2020_to_srgb, recover_highlights
 from ..profiles import save_profile, load_profile, list_profiles, delete_profile
 from ..lut import parse_cube, apply_lut
 from .viewer import make_preview
@@ -36,6 +36,7 @@ DEFAULT_SETTINGS = {
     "auto_redetect_on_crop": True,
     "preview_quality": 90,
     "preview_max_width": 1200,
+    "highlight_recovery": False,
 }
 
 
@@ -144,6 +145,7 @@ class GuiState:
     history: ParamHistory = field(default_factory=ParamHistory)
     lut_path: str = ""
     lut_data: dict | None = None
+    highlight_recovery: bool = False
 
 
 def _sample_patch(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
@@ -378,18 +380,23 @@ def _run_pipeline(state: GuiState) -> None:
     When a LUT is loaded, gamma/soft_clip are set to identity so stages 4+5
     become no-ops, then the LUT is applied to the Stage 3 output.
     """
+    pipeline_input = _get_pipeline_input(state)
+
+    if state.highlight_recovery:
+        pipeline_input = recover_highlights(pipeline_input)
+
     if state.lut_data is not None:
         saved_gamma = state.params.gamma
         saved_soft_clip = state.params.soft_clip
         state.params.gamma = 1.0
         state.params.soft_clip = 1.0
-        result = invert(_get_pipeline_input(state), state.params)
+        result = invert(pipeline_input, state.params)
         state.params.gamma = saved_gamma
         state.params.soft_clip = saved_soft_clip
         result = np.clip(result, 0.0, 1.0)
         result = apply_lut(result, state.lut_data)
     else:
-        result = invert(_get_pipeline_input(state), state.params)
+        result = invert(pipeline_input, state.params)
 
     result_srgb = rec2020_to_srgb(result)
     result_srgb = np.clip(result_srgb, 0, None)
@@ -463,6 +470,7 @@ def _redetect_in_crop(state: GuiState) -> None:
 def create_app() -> Flask:
     app = Flask(__name__)
     state = GuiState(settings=_load_settings())
+    state.highlight_recovery = state.settings.get("highlight_recovery", False)
     state.carry_categories = state.settings.get("carry_categories", DEFAULT_SETTINGS["carry_categories"])
 
     @app.route("/")
@@ -1106,6 +1114,23 @@ def create_app() -> Flask:
     @app.route("/api/lut")
     def api_get_lut():
         return jsonify({"lut": Path(state.lut_path).name if state.lut_path else None})
+
+    @app.route("/api/highlight-recovery", methods=["POST"])
+    def api_toggle_highlight_recovery():
+        data = request.get_json(force=True) if request.is_json else {}
+        state.highlight_recovery = bool(data.get("enabled", not state.highlight_recovery))
+        state.settings["highlight_recovery"] = state.highlight_recovery
+        _save_settings(state.settings)
+        if state.original_img is not None:
+            try:
+                _run_pipeline(state)
+            except Exception as e:
+                return jsonify({"error": f"Inversion failed: {e}"}), 500
+        return jsonify({
+            "highlight_recovery": state.highlight_recovery,
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+        })
 
     @app.route("/api/thumb/<int:index>")
     def api_thumb(index):
