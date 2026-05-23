@@ -106,7 +106,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <h2>Film Base (Dmin)</h2>
     <div style="display:flex;gap:6px;align-items:center;">
       <button class="btn" id="btn-pick">Pick Dmin</button>
-      <button class="btn" id="btn-pick-gray" title="Pick neutral gray point for WB (G)">Gray</button>
       <button class="btn" id="btn-redetect" title="Re-run auto-detect within crop (D)">Re-detect</button>
     </div>
     <div style="display:flex;gap:8px;margin-top:4px;">
@@ -271,7 +270,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 <script>
 // State
 let pickingDmin = false;
-let pickingGray = false;
 let pickingWB = false;
 let cropMode = false;
 let cropDrawing = false;
@@ -300,9 +298,8 @@ function resetImageState() {
   clientOrientation = 0; clientFlipH = false; clientFlipV = false;
   state_currentIndex = 0; currentTotalFiles = 0;
   currentSrcIsOriginal = false; lastResultSrc = ""; lastOrigSrc = "";
-  pickingDmin = false; pickingGray = false; pickingWB = false; cropMode = false; cropDrawing = false;
+  pickingDmin = false; pickingWB = false; cropMode = false; cropDrawing = false;
   $("btn-pick").classList.remove("btn-active");
-  $("btn-pick-gray").classList.remove("btn-active");
   $("btn-pick-wb").classList.remove("btn-active");
   $("btn-crop").classList.remove("btn-active");
   $("btn-before-after").classList.remove("btn-active");
@@ -734,7 +731,6 @@ $("btn-invert").addEventListener("click", doInvert);
 $("btn-pick").addEventListener("click", () => {
   pickingDmin = !pickingDmin;
   if (pickingDmin) {
-    pickingGray = false; $("btn-pick-gray").classList.remove("btn-active");
     pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
     // Show original negative so user samples from the right image
     img.src = "/api/preview/orig?" + Date.now();
@@ -745,38 +741,19 @@ $("btn-pick").addEventListener("click", () => {
     currentSrcIsOriginal = false;
   }
   $("btn-pick").classList.toggle("btn-active", pickingDmin);
-  img.style.cursor = (pickingDmin || pickingGray || pickingWB) ? "crosshair" : "default";
-});
-
-// Eyedropper (Gray / neutral point)
-$("btn-pick-gray").addEventListener("click", () => {
-  pickingGray = !pickingGray;
-  if (pickingGray) {
-    pickingDmin = false; $("btn-pick").classList.remove("btn-active");
-    pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
-    img.src = "/api/preview/orig?" + Date.now();
-    currentSrcIsOriginal = true;
-  } else {
-    img.src = "/api/preview/result?" + Date.now();
-    currentSrcIsOriginal = false;
-  }
-  $("btn-pick-gray").classList.toggle("btn-active", pickingGray);
-  img.style.cursor = (pickingDmin || pickingGray || pickingWB) ? "crosshair" : "default";
+  img.style.cursor = (pickingDmin || pickingWB) ? "crosshair" : "default";
 });
 
 // Eyedropper (WB)
 $("btn-pick-wb").addEventListener("click", () => {
   pickingWB = !pickingWB;
-  if (pickingWB) {
-    pickingDmin = false; $("btn-pick").classList.remove("btn-active");
-    pickingGray = false; $("btn-pick-gray").classList.remove("btn-active");
-  }
+  if (pickingWB) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); }
   $("btn-pick-wb").classList.toggle("btn-active", pickingWB);
-  img.style.cursor = (pickingDmin || pickingGray || pickingWB) ? "crosshair" : "default";
+  img.style.cursor = (pickingDmin || pickingWB) ? "crosshair" : "default";
 });
 
 img.addEventListener("click", (e) => {
-  if (!pickingDmin && !pickingGray && !pickingWB) return;
+  if (!pickingDmin && !pickingWB) return;
   const rect = img.getBoundingClientRect();
   const scaleX = previewWidth / rect.width;
   const scaleY = previewHeight / rect.height;
@@ -785,7 +762,6 @@ img.addEventListener("click", (e) => {
   const orig = previewToOriginalCoords(px, py);
 
   setLoading(true);
-
   if (pickingWB) {
     fetch("/api/pick-wb", {
       method: "POST",
@@ -801,25 +777,6 @@ img.addEventListener("click", (e) => {
       if (data.auto_saved) flashStatus("Auto-saved");
     })
     .catch(e => { setLoading(false); alert("WB pick failed: " + e); });
-    return;
-  }
-
-  if (pickingGray) {
-    fetch("/api/pick-gray", {
-      method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({x: orig.x, y: orig.y}),
-    })
-    .then(r => r.json())
-    .then(data => {
-      setLoading(false);
-      if (data.error) { alert(data.error); return; }
-      updateUI(data.params);
-      img.src = "/api/preview/result?" + Date.now();
-      currentSrcIsOriginal = false;
-      if (data.auto_saved) flashStatus("Auto-saved");
-    })
-    .catch(e => { setLoading(false); alert("Gray pick failed: " + e); });
     return;
   }
 
@@ -914,8 +871,8 @@ function updateCropOverlay() {
 $("btn-crop").addEventListener("click", () => {
   cropMode = !cropMode;
   $("btn-crop").classList.toggle("btn-active", cropMode);
-  if (cropMode) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); pickingGray = false; $("btn-pick-gray").classList.remove("btn-active"); pickingWB = false; $("btn-pick-wb").classList.remove("btn-active"); }
-  img.style.cursor = cropMode ? "crosshair" : ((pickingDmin || pickingGray || pickingWB) ? "crosshair" : "default");
+  if (cropMode) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); pickingWB = false; $("btn-pick-wb").classList.remove("btn-active"); }
+  img.style.cursor = cropMode ? "crosshair" : ((pickingDmin || pickingWB) ? "crosshair" : "default");
 });
 
 // Clear crop
@@ -1016,7 +973,7 @@ window.addEventListener("mouseup", (e) => {
     // Auto-exit crop mode after successful crop
     cropMode = false;
     $("btn-crop").classList.remove("btn-active");
-    img.style.cursor = (pickingDmin || pickingGray) ? "crosshair" : "default";
+    img.style.cursor = pickingDmin ? "crosshair" : "default";
     // Ensure drawing rect is fully reset
     const drawEl = $("crop-drawing");
     drawEl.style.display = "none";
@@ -1268,7 +1225,7 @@ $("viewer").addEventListener("wheel", (e) => {
 }, {passive: false});
 
 $("viewer").addEventListener("mousedown", (e) => {
-  if (e.button === 0 && !pickingDmin && !pickingGray && !pickingWB && !cropMode) {
+  if (e.button === 0 && !pickingDmin && !pickingWB && !cropMode) {
     isPanning = true;
     lastMouseX = e.clientX; lastMouseY = e.clientY;
     img.style.cursor = "grabbing";
@@ -1284,7 +1241,7 @@ window.addEventListener("mousemove", (e) => {
 window.addEventListener("mouseup", (e) => {
   if (isPanning) {
     isPanning = false;
-    img.style.cursor = (cropMode || pickingDmin || pickingGray || pickingWB) ? "crosshair" : "default";
+    img.style.cursor = (cropMode || pickingDmin || pickingWB) ? "crosshair" : "default";
   }
 });
 
@@ -1365,8 +1322,6 @@ document.addEventListener("keydown", (e) => {
     toggleBeforeAfter();
   } else if (e.key === "e" || e.key === "E") {
     $("btn-pick").click();
-  } else if (e.key === "g" || e.key === "G") {
-    $("btn-pick-gray").click();
   } else if (e.key === "w" || e.key === "W") {
     $("btn-pick-wb").click();
   } else if (e.key === "c" || e.key === "C") {
@@ -1375,7 +1330,6 @@ document.addEventListener("keydown", (e) => {
     $("btn-redetect").click();
   } else if (e.key === "Escape") {
     if (pickingDmin) { $("btn-pick").click(); }
-    if (pickingGray) { $("btn-pick-gray").click(); }
     if (pickingWB) { $("btn-pick-wb").click(); }
     if (cropMode) { $("btn-crop").click(); }
   } else if (e.key === " ") {
@@ -1437,7 +1391,6 @@ function toggleShortcutOverlay() {
     <h2 style="margin-bottom:12px;font-size:1.1em;color:#999;text-transform:uppercase;letter-spacing:0.05em;">Keyboard Shortcuts</h2>
     <table style="width:100%;border-collapse:collapse;">
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">E</td><td>Eyedropper (pick Dmin)</td></tr>
-      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">G</td><td>Gray point (WB from negative)</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">W</td><td>WB neutral point eyedropper</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">C</td><td>Crop mode</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">D</td><td>Re-detect in crop</td></tr>
