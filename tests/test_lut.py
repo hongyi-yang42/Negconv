@@ -1,14 +1,8 @@
-"""Sprint 8 tests: WB upgrade, LUT loader, highlight recovery."""
-
-import io
-import json
-import tempfile
-from pathlib import Path
+"""Tests for .cube LUT parser and application."""
 
 import numpy as np
 import pytest
 
-from negconv.gui.app import create_app
 from negconv.lut import parse_cube, apply_lut
 
 
