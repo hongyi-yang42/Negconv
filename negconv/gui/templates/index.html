@@ -825,14 +825,6 @@ function clientToPreview(cx, cy) {
   };
 }
 
-// Convert preview pixel coords to original image coords
-function previewToOrig(px, py) {
-  return {
-    x: Math.round(px * currentDims[1] / previewWidth),
-    y: Math.round(py * currentDims[0] / previewHeight),
-  };
-}
-
 // Position the 4 dark mask divs + border around crop rectangle (in viewer space)
 function updateCropOverlay() {
   const maskTop = $("mask-top"), maskBot = $("mask-bottom");

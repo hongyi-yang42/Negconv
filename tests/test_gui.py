@@ -10,7 +10,7 @@ import pytest
 import tifffile
 from PIL import Image
 
-from negconv.gui.app import create_app, _sample_dmin, _preview_to_orig_coords
+from negconv.gui.app import create_app, _sample_dmin
 from negconv.gui.viewer import linear_to_srgb, make_preview
 
 
@@ -74,23 +74,6 @@ class TestSampleDmin:
         assert dmin.shape == (3,)
         assert np.all(np.isfinite(dmin))
 
-
-class TestCoordMapping:
-    def test_center_pixel(self):
-        """Center of preview maps to center of original."""
-        ox, oy = _preview_to_orig_coords(600, 400, 1200, 800, 4000, 3000)
-        assert ox == 2000
-        assert oy == 1500
-
-    def test_top_left(self):
-        ox, oy = _preview_to_orig_coords(0, 0, 1200, 800, 4000, 3000)
-        assert ox == 0
-        assert oy == 0
-
-    def test_bottom_right(self):
-        ox, oy = _preview_to_orig_coords(1199, 799, 1200, 800, 4000, 3000)
-        assert ox >= 3990
-        assert oy >= 2990
 
 
 class TestFlaskRoutes:

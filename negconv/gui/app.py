@@ -155,20 +155,6 @@ def _sample_dmin(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> n
     return np.mean(region, axis=(0, 1)).astype(np.float32)
 
 
-def _preview_to_orig_coords(
-    px: int, py: int,
-    preview_w: int, preview_h: int,
-    orig_w: int, orig_h: int,
-) -> tuple[int, int]:
-    """Map preview pixel coords to original image pixel coords."""
-    orig_x = int(px * orig_w / preview_w)
-    orig_y = int(py * orig_h / preview_h)
-    return (
-        min(max(orig_x, 0), orig_w - 1),
-        min(max(orig_y, 0), orig_h - 1),
-    )
-
-
 def _get_pipeline_input(state: GuiState) -> np.ndarray:
     """Return the image region to run through the pipeline (cropped or full)."""
     if state.crop_rect and state.original_img is not None:
