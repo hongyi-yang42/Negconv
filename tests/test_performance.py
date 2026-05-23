@@ -76,3 +76,27 @@ class TestPerformance:
         # Sanity: all stages should complete
         assert len(jpeg) > 1000
         assert result_srgb.shape == raw_img.shape
+
+    def test_float32_histogram_precision(self):
+        """Float32 histogram captures sub-uint8 differences that uint8 misses."""
+        # float32 bins over [0,1]: edges at 0, 1/256≈0.0039, 2/256≈0.0078
+        # uint8 values: both 0.001 and 0.003 round to uint8=0 (bin 0 in uint8 histogram)
+        # But float32 separates them into bin 0 and bin 0 (0.003 < 0.0039, still bin 0)
+        # Use 0.001 and 0.005 instead: 0.005/1*256=1.28 → float32 bin 1
+        # 0.005*255=1.275 → uint8=1 (bin 1). Still same. Need both < 1/255=0.00392
+        # 0.001 → float32 bin 0, 0.003 → float32 bin 0. Both uint8=0.
+        # Need: a value in float32 bin 1 but uint8 bin 0.
+        # float32 bin 1 starts at 1/256 ≈ 0.003906. uint8 bin 1 starts at 1/255 ≈ 0.003922
+        # So 0.00391 is float32 bin 1 but uint8 bin 0!
+        img = np.zeros((100, 100, 3), dtype=np.float32)
+        img[:50, :, 0] = 0.001    # float32 bin 0, uint8 bin 0
+        img[50:, :, 0] = 0.00391  # float32 bin 1, uint8 bin 0
+
+        counts_f32, _ = np.histogram(img[:, :, 0], bins=256, range=(0, 1))
+        counts_u8, _ = np.histogram(
+            np.clip(img * 255, 0, 255).astype(np.uint8)[:, :, 0],
+            bins=256, range=(0, 256),
+        )
+
+        assert counts_f32[1] > 0, "float32 should resolve 0.00391 into bin 1"
+        assert counts_u8[1] == 0, "uint8 should collapse 0.00391 into bin 0"

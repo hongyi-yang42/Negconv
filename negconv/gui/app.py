@@ -146,6 +146,7 @@ class GuiState:
     lut_path: str = ""
     lut_data: dict | None = None
     highlight_recovery: bool = False
+    result_rec2020: np.ndarray | None = None
 
 
 def _sample_patch(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
@@ -398,6 +399,7 @@ def _run_pipeline(state: GuiState) -> None:
     else:
         result = invert(pipeline_input, state.params)
 
+    state.result_rec2020 = result
     result_srgb = rec2020_to_srgb(result)
     result_srgb = np.clip(result_srgb, 0, None)
     max_w = state.settings.get("preview_max_width", PREVIEW_MAX_WIDTH)
@@ -886,6 +888,18 @@ def create_app() -> Flask:
 
     @app.route("/api/histogram")
     def api_histogram():
+        source = request.args.get("source", "preview")
+        if source == "precise":
+            if state.result_rec2020 is None:
+                return jsonify({"error": "No result"}), 404
+            from ..color import rec2020_to_srgb
+            arr = np.clip(rec2020_to_srgb(state.result_rec2020), 0, 1)
+            hist = {}
+            for i, ch in enumerate(("r", "g", "b")):
+                counts, _ = np.histogram(arr[:, :, i], bins=256, range=(0, 1))
+                hist[ch] = counts.tolist()
+            return jsonify(hist)
+        # Default: from preview JPEG (fast, uint8)
         if not state.result_preview:
             return jsonify({"error": "No result"}), 404
         from PIL import Image as PILImage

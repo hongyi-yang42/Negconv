@@ -80,6 +80,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <div id="crop-drawing"></div>
   <div id="histogram-wrap">
     <canvas id="histogram-canvas" width="240" height="120"></canvas>
+    <div style="text-align:center;font-size:10px;color:#666;cursor:pointer;margin-top:2px;" id="hist-mode">Preview</div>
   </div>
   <div id="filmstrip"></div>
 </div>
@@ -1001,13 +1002,15 @@ window.addEventListener("mouseup", (e) => {
 
 // ---- Histogram ----
 let histVisible = false;
+let histPrecise = false;
 const histCanvas = $("histogram-canvas");
 const histCtx = histCanvas.getContext("2d");
 const histWrap = $("histogram-wrap");
 
 function fetchAndDrawHistogram() {
   if (!histVisible) return;
-  fetch("/api/histogram")
+  const url = histPrecise ? "/api/histogram?source=precise" : "/api/histogram";
+  fetch(url)
     .then(r => r.json())
     .then(data => {
       if (data.error) return;
@@ -1046,6 +1049,12 @@ function drawHistogram(data) {
     histCtx.fill();
   }
 }
+
+$("hist-mode").addEventListener("click", () => {
+  histPrecise = !histPrecise;
+  $("hist-mode").textContent = histPrecise ? "Precise" : "Preview";
+  fetchAndDrawHistogram();
+});
 
 function toggleHistogram() {
   histVisible = !histVisible;
