@@ -10,7 +10,7 @@ import pytest
 import tifffile
 from PIL import Image
 
-from negconv.gui.app import create_app, _sample_dmin
+from negconv.gui.app import create_app, _sample_patch
 from negconv.gui.viewer import linear_to_srgb, make_preview
 
 
@@ -64,13 +64,13 @@ class TestSampleDmin:
     def test_uniform_patch(self):
         """Sampling a uniform image returns the uniform value."""
         img = np.full((100, 100, 3), [0.2, 0.3, 0.4], dtype=np.float32)
-        dmin = _sample_dmin(img, 50, 50)
+        dmin = _sample_patch(img, 50, 50)
         np.testing.assert_allclose(dmin, [0.2, 0.3, 0.4], atol=0.001)
 
     def test_edge_coords(self):
         """Sampling near edge doesn't crash."""
         img = np.full((100, 100, 3), 0.5, dtype=np.float32)
-        dmin = _sample_dmin(img, 0, 0)
+        dmin = _sample_patch(img, 0, 0)
         assert dmin.shape == (3,)
         assert np.all(np.isfinite(dmin))
 

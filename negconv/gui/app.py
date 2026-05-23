@@ -143,8 +143,8 @@ class GuiState:
     history: ParamHistory = field(default_factory=ParamHistory)
 
 
-def _sample_dmin(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
-    """Sample a patch_size x patch_size area around (orig_x, orig_y) and average per-channel."""
+def _sample_patch(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
+    """Sample a patch around (orig_x, orig_y), return per-channel median."""
     h, w = img.shape[:2]
     half = patch // 2
     y0 = max(orig_y - half, 0)
@@ -152,7 +152,7 @@ def _sample_dmin(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> n
     x0 = max(orig_x - half, 0)
     x1 = min(orig_x + half + 1, w)
     region = img[y0:y1, x0:x1, :]
-    return np.mean(region, axis=(0, 1)).astype(np.float32)
+    return np.median(region.reshape(-1, 3), axis=0).astype(np.float32)
 
 
 def _get_pipeline_input(state: GuiState) -> np.ndarray:
@@ -527,7 +527,7 @@ def create_app() -> Flask:
         orig_x, orig_y = data.get("x", 0), data.get("y", 0)
 
         # JS already maps preview→original coords via previewToOriginalCoords
-        dmin = _sample_dmin(state.original_img, orig_x, orig_y)
+        dmin = _sample_patch(state.original_img, orig_x, orig_y)
         state.params.dmin = dmin
 
         try:
@@ -678,38 +678,32 @@ def create_app() -> Flask:
     # ---- WB eyedropper ----
     @app.route("/api/pick-wb", methods=["POST"])
     def api_pick_wb():
-        """Sample a neutral patch from the inverted result to set WB."""
+        """Sample a neutral point to set WB via log-density correction.
+
+        Samples from state.original_img at the clicked coords, computes
+        per-channel log density relative to Dmin, then adjusts wb_high
+        to equalize densities (green anchor).
+        """
         if state.original_img is None:
             return jsonify({"error": "No image loaded"}), 400
 
         data = request.get_json(force=True)
-        px, py = data.get("x", 0), data.get("y", 0)
+        orig_x, orig_y = data.get("x", 0), data.get("y", 0)
 
-        # JS sends original-space coords; adjust for crop offset
-        if state.crop_rect:
-            px -= state.crop_rect["x"]
-            py -= state.crop_rect["y"]
+        patch = _sample_patch(state.original_img, orig_x, orig_y)
+        dmin = state.params.dmin
 
-        # We need the full-res inverted sRGB result to sample from
-        result = invert(_get_pipeline_input(state), state.params)
-        result_srgb = rec2020_to_srgb(result)
-        result_srgb = np.clip(result_srgb, 0, None)
+        safe_patch = np.maximum(patch, np.float32(1e-6))
+        safe_dmin = np.maximum(dmin, np.float32(1e-6))
+        log_density = np.log10(safe_patch / safe_dmin)
 
-        h, w = result_srgb.shape[:2]
-        half = 2
-        y0 = max(py - half, 0)
-        y1 = min(py + half + 1, h)
-        x0 = max(px - half, 0)
-        x1 = min(px + half + 1, w)
-        patch = result_srgb[y0:y1, x0:x1, :]
-        per_ch = np.mean(patch, axis=(0, 1)).astype(np.float32)
-        luminance = float(np.mean(per_ch))
-        if luminance < 1e-6:
-            return jsonify({"error": "Sampled area too dark for WB"}), 400
-        # Guard against zero channels to avoid division errors
-        safe_ch = np.maximum(per_ch, 1e-6)
-        correction = luminance / safe_ch
-        state.params.wb_high = np.clip(state.params.wb_high * correction, 0.5, 2.0).astype(np.float32)
+        if np.any(np.abs(log_density) < 0.01):
+            return jsonify({"error": "Too close to film base — pick an exposed area"}), 400
+
+        green_ld = log_density[1]
+        green_wb = state.params.wb_high[1]
+        new_wb = green_wb * green_ld / log_density
+        state.params.wb_high = np.clip(new_wb, 0.5, 2.0).astype(np.float32)
 
         try:
             _run_pipeline(state)
