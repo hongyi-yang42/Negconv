@@ -221,10 +221,22 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <div style="background:#222;border-radius:8px;padding:24px 28px;color:#ddd;font-size:0.9em;max-width:380px;max-height:80vh;overflow-y:auto;">
     <h2 style="margin-bottom:16px;font-size:1.1em;color:#999;text-transform:uppercase;letter-spacing:0.05em;">Settings</h2>
 
-    <h3 style="margin:12px 0 8px;color:#2a6;font-size:0.85em;text-transform:uppercase;">Scanning</h3>
-    <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85em;">
-      <input type="checkbox" id="set-carry-params"> Carry params between frames
+    <h3 style="margin:12px 0 8px;color:#2a6;font-size:0.85em;text-transform:uppercase;">Default Carry Settings</h3>
+    <div style="font-size:0.75em;color:#666;margin-bottom:6px;">Applied when navigating with arrow keys</div>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:0.85em;">
+      <input type="checkbox" id="set-carry-tone"> Tone
     </label>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:0.85em;">
+      <input type="checkbox" id="set-carry-wb"> White Balance
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:0.85em;">
+      <input type="checkbox" id="set-carry-film-base"> Film Base (Dmin/Dmax)
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85em;">
+      <input type="checkbox" id="set-carry-geometry"> Geometry (crop/rotation)
+    </label>
+
+    <h3 style="margin:12px 0 8px;color:#2a6;font-size:0.85em;text-transform:uppercase;">Scanning</h3>
     <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85em;">
       <input type="checkbox" id="set-auto-redetect"> Auto re-detect after crop
     </label>
@@ -352,15 +364,11 @@ async function loadFilmstrip() {
   let html = data.files.map(f => {
     const active = f.index === data.current_index ? ' active' : '';
     const nameColor = f.has_sidecar ? '#4a9' : '#666';
-    return `<div class="fs-item${active}" data-index="${f.index}" onclick="navigateTo(${f.index})">
+    return `<div class="fs-item${active}" data-index="${f.index}" onclick="navigateTo(${f.index})" oncontextmenu="showCtxMenu(event,${f.index})">
       <img src="/api/thumb/${f.index}" onerror="this.style.opacity='0.3'">
       <div class="fs-name" style="color:${nameColor}">${f.name}</div>
     </div>`;
   }).join("");
-
-  html += `<label id="carry-label"><input type="checkbox" id="carry-params" ${data.carry_params ? "checked" : ""}
-    onchange="fetch('/api/carry-params',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:this.checked})})">
-    Carry params</label>`;
 
   strip.innerHTML = html;
 
@@ -968,7 +976,7 @@ window.addEventListener("mouseup", (e) => {
     drawEl.style.height = "0";
     img.src = "/api/preview/result?" + Date.now();
     updateUI(data.params);
-    updateCropOverlay();
+    // Don't show crop overlay after commit — preview already reflects the crop
     if (data.auto_saved) flashStatus("Auto-saved");
   })
   .catch(e => { setLoading(false); alert("Crop failed: " + e); });
@@ -1423,7 +1431,11 @@ document.addEventListener("keydown", (e) => {
 // ---- Settings modal ----
 let settingsVisible = false;
 function loadSettingsToUI(settings) {
-  $("set-carry-params").checked = settings.carry_params;
+  const cats = settings.carry_categories || {tone:true, wb:true, film_base:false, geometry:true};
+  $("set-carry-tone").checked = !!cats.tone;
+  $("set-carry-wb").checked = !!cats.wb;
+  $("set-carry-film-base").checked = !!cats.film_base;
+  $("set-carry-geometry").checked = !!cats.geometry;
   $("set-auto-redetect").checked = settings.auto_redetect_on_crop;
   $("set-preview-size").value = String(settings.preview_max_width);
   $("set-preview-quality").value = String(settings.preview_quality);
@@ -1439,7 +1451,12 @@ function closeSettings() {
 }
 function saveSettings() {
   const s = {
-    carry_params: $("set-carry-params").checked,
+    carry_categories: {
+      tone: $("set-carry-tone").checked,
+      wb: $("set-carry-wb").checked,
+      film_base: $("set-carry-film-base").checked,
+      geometry: $("set-carry-geometry").checked,
+    },
     auto_redetect_on_crop: $("set-auto-redetect").checked,
     preview_max_width: parseInt($("set-preview-size").value),
     preview_quality: parseInt($("set-preview-quality").value),
@@ -1449,8 +1466,6 @@ function saveSettings() {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify(s),
   }).then(() => {
-    const cb = $("carry-params");
-    if (cb) cb.checked = s.carry_params;
     closeSettings();
     flashStatus("Settings saved");
   });
@@ -1464,6 +1479,64 @@ $("settings-modal").addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (settingsVisible && e.key === "Escape") { closeSettings(); e.stopPropagation(); }
 }, true);
+</script>
+
+<!-- Right-click context menu for filmstrip -->
+<div id="ctx-menu" style="display:none;position:fixed;z-index:2000;background:#222;border:1px solid #555;border-radius:6px;padding:10px 14px;color:#ddd;font-size:0.85em;min-width:180px;">
+  <div style="font-size:0.8em;color:#999;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em;">Copy settings to this frame</div>
+  <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;cursor:pointer;"><input type="checkbox" id="ctx-tone" checked> Tone</label>
+  <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;cursor:pointer;"><input type="checkbox" id="ctx-wb" checked> White Balance</label>
+  <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;cursor:pointer;"><input type="checkbox" id="ctx-film-base"> Film Base</label>
+  <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;"><input type="checkbox" id="ctx-geometry" checked> Geometry</label>
+  <button class="btn btn-primary" id="ctx-apply" style="width:100%;">Apply</button>
+</div>
+<script>
+let ctxTargetIndex = -1;
+
+function showCtxMenu(e, index) {
+  e.preventDefault();
+  ctxTargetIndex = index;
+  const menu = $("ctx-menu");
+  menu.style.display = "block";
+  menu.style.left = e.clientX + "px";
+  menu.style.top = e.clientY + "px";
+  // Clamp to viewport
+  const r = menu.getBoundingClientRect();
+  if (r.right > window.innerWidth) menu.style.left = (window.innerWidth - r.width - 8) + "px";
+  if (r.bottom > window.innerHeight) menu.style.top = (window.innerHeight - r.height - 8) + "px";
+}
+
+function hideCtxMenu() {
+  $("ctx-menu").style.display = "none";
+  ctxTargetIndex = -1;
+}
+
+document.addEventListener("click", (e) => {
+  if (!$("ctx-menu").contains(e.target)) hideCtxMenu();
+});
+
+$("ctx-apply").addEventListener("click", () => {
+  if (ctxTargetIndex < 0) return;
+  const cats = {
+    tone: $("ctx-tone").checked,
+    wb: $("ctx-wb").checked,
+    film_base: $("ctx-film-base").checked,
+    geometry: $("ctx-geometry").checked,
+  };
+  hideCtxMenu();
+  setLoading(true);
+  fetch("/api/copy-settings", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({target_index: ctxTargetIndex, categories: cats}),
+  }).then(r => r.json()).then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    applyLoadResponse(data);
+    loadFilmstrip();
+    fetchAndDrawHistogram();
+  }).catch(e => { setLoading(false); alert("Copy settings failed: " + e); });
+});
 </script>
 </body>
 </html>

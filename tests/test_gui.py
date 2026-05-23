@@ -822,8 +822,8 @@ class TestFilmstrip:
         client = app.test_client()
 
         client.post("/api/load", json={"path": p1})
-        # Enable carry params (default is now off)
-        client.post("/api/carry-params", json={"enabled": True})
+        # Enable carry via categories
+        client.post("/api/carry-categories", json={"tone": True, "wb": True, "film_base": False, "geometry": True})
         # Set custom gamma and crop
         client.post("/api/params", json={"gamma": 6.0})
         client.post("/api/crop", json={"x": 10, "y": 10, "w": 80, "h": 80})

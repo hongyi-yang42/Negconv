@@ -15,7 +15,7 @@ import numpy as np
 from flask import Flask, jsonify, render_template, request, send_file
 
 from ..io import apply_orientation, extract_exif, is_raw, read_image, write_image, write_jpeg, write_heic
-from ..params import NegconvParams, auto_detect, save_params, load_params
+from ..params import NegconvParams, auto_detect, save_params, load_params, CARRY_CATEGORIES
 from ..pipeline import invert
 from ..color import srgb_to_rec2020, rec2020_to_srgb
 from ..profiles import save_profile, load_profile, list_profiles, delete_profile
@@ -31,7 +31,7 @@ THUMB_WIDTH = 120
 _thumb_executor = ThreadPoolExecutor(max_workers=2)
 
 DEFAULT_SETTINGS = {
-    "carry_params": False,
+    "carry_categories": {"tone": True, "wb": True, "film_base": False, "geometry": True},
     "auto_redetect_on_crop": True,
     "preview_quality": 90,
     "preview_max_width": 1200,
@@ -138,7 +138,7 @@ class GuiState:
     black_level: list[int] = field(default_factory=lambda: [0, 0, 0, 0])
     directory_files: list[str] = field(default_factory=list)
     current_index: int = 0
-    carry_params: bool = False
+    carry_categories: dict = field(default_factory=lambda: {"tone": True, "wb": True, "film_base": False, "geometry": True})
     settings: dict = field(default_factory=lambda: dict(DEFAULT_SETTINGS))
     history: ParamHistory = field(default_factory=ParamHistory)
 
@@ -395,6 +395,52 @@ def _run_pipeline(state: GuiState) -> None:
     state.result_preview = make_preview(result_srgb, max_w, quality=quality)
 
 
+def _snapshot_carry(state: GuiState) -> dict:
+    """Snapshot all carryable fields from current state."""
+    return {
+        "params": {
+            "dmin": state.params.dmin.copy(),
+            "d_max": state.params.d_max,
+            "wb_high": state.params.wb_high.copy(),
+            "wb_low": state.params.wb_low.copy(),
+            "offset": state.params.offset,
+            "exposure": state.params.exposure,
+            "black": state.params.black,
+            "gamma": state.params.gamma,
+            "soft_clip": state.params.soft_clip,
+        },
+        "crop_rect": state.crop_rect,
+        "orientation": state.orientation,
+        "flip_h": state.flip_h,
+        "flip_v": state.flip_v,
+    }
+
+
+def _apply_carry(state: GuiState, snapshot: dict, categories: dict) -> None:
+    """Apply carried fields from snapshot to state, using enabled categories."""
+    enabled_fields = set()
+    for cat, fields in CARRY_CATEGORIES.items():
+        if categories.get(cat, False):
+            enabled_fields.update(fields)
+
+    sp = snapshot["params"]
+    for fname in enabled_fields:
+        if fname in ("crop_rect", "orientation", "flip_h", "flip_v"):
+            continue  # geometry handled below
+        if fname in sp:
+            val = sp[fname]
+            setattr(state.params, fname, val.copy() if isinstance(val, np.ndarray) else val)
+
+    if "crop_rect" in enabled_fields:
+        state.crop_rect = snapshot["crop_rect"]
+    if "orientation" in enabled_fields:
+        state.orientation = snapshot["orientation"]
+    if "flip_h" in enabled_fields:
+        state.flip_h = snapshot["flip_h"]
+    if "flip_v" in enabled_fields:
+        state.flip_v = snapshot["flip_v"]
+
+
 def _redetect_in_crop(state: GuiState) -> None:
     """Re-detect Dmin/Dmax within crop + 5% inset, update params, run pipeline."""
     img = state.original_img
@@ -416,7 +462,7 @@ def _redetect_in_crop(state: GuiState) -> None:
 def create_app() -> Flask:
     app = Flask(__name__)
     state = GuiState(settings=_load_settings())
-    state.carry_params = state.settings.get("carry_params", False)
+    state.carry_categories = state.settings.get("carry_categories", DEFAULT_SETTINGS["carry_categories"])
 
     @app.route("/")
     def index():
@@ -874,7 +920,7 @@ def create_app() -> Flask:
         return jsonify({
             "files": files,
             "current_index": state.current_index,
-            "carry_params": state.carry_params,
+            "carry_categories": state.carry_categories,
         })
 
     @app.route("/api/navigate", methods=["POST"])
@@ -896,23 +942,7 @@ def create_app() -> Flask:
             return jsonify({"error": "No more files"}), 400
 
         # 1. Snapshot current state for carry
-        carry_snapshot = {
-            "params": NegconvParams(
-                dmin=state.params.dmin.copy(),
-                d_max=state.params.d_max,
-                wb_high=state.params.wb_high.copy(),
-                wb_low=state.params.wb_low.copy(),
-                offset=state.params.offset,
-                exposure=state.params.exposure,
-                black=state.params.black,
-                gamma=state.params.gamma,
-                soft_clip=state.params.soft_clip,
-            ),
-            "crop_rect": state.crop_rect,
-            "orientation": state.orientation,
-            "flip_h": state.flip_h,
-            "flip_v": state.flip_v,
-        }
+        carry_snapshot = _snapshot_carry(state)
 
         # 2. Auto-save current file
         _auto_save(state)
@@ -925,24 +955,11 @@ def create_app() -> Flask:
             return jsonify({"error": f"Failed to read: {e}"}), 400
         state.current_index = target
 
-        # 4. If no sidecar and carry is ON, apply carry
-        if not sidecar_loaded and state.carry_params:
-            cp = carry_snapshot["params"]
-            state.params.gamma = cp.gamma
-            state.params.exposure = cp.exposure
-            state.params.black = cp.black
-            state.params.soft_clip = cp.soft_clip
-            state.params.offset = cp.offset
-            state.params.wb_high = cp.wb_high.copy()
-            state.params.wb_low = cp.wb_low.copy()
-
-            state.crop_rect = carry_snapshot["crop_rect"]
-            state.orientation = carry_snapshot["orientation"]
-            state.flip_h = carry_snapshot["flip_h"]
-            state.flip_v = carry_snapshot["flip_v"]
-
-            # Re-detect Dmin/Dmax within carried crop + 5% inset
-            _redetect_in_crop(state)
+        # 4. If no sidecar, apply carry using enabled categories
+        if not sidecar_loaded:
+            _apply_carry(state, carry_snapshot, state.carry_categories)
+            if state.carry_categories.get("geometry", False):
+                _redetect_in_crop(state)
 
         # 5. Always run pipeline so result preview is available
         try:
@@ -976,13 +993,71 @@ def create_app() -> Flask:
             "flip_v": state.flip_v,
         })
 
-    @app.route("/api/carry-params", methods=["POST"])
-    def api_carry_params():
+    @app.route("/api/carry-categories")
+    def api_carry_categories():
+        return jsonify({
+            "categories": {cat: list(fields) for cat, fields in CARRY_CATEGORIES.items()},
+            "enabled": state.carry_categories,
+        })
+
+    @app.route("/api/carry-categories", methods=["POST"])
+    def api_set_carry_categories():
         data = request.get_json(force=True)
-        state.carry_params = bool(data.get("enabled", True))
-        state.settings["carry_params"] = state.carry_params
+        state.carry_categories = data
+        state.settings["carry_categories"] = data
         _save_settings(state.settings)
-        return jsonify({"carry_params": state.carry_params})
+        return jsonify({"carry_categories": state.carry_categories})
+
+    @app.route("/api/copy-settings", methods=["POST"])
+    def api_copy_settings():
+        """Copy settings from current image to a target image via right-click."""
+        data = request.get_json(force=True)
+        target = data.get("target_index")
+        categories = data.get("categories", {})
+        if target is None or target < 0 or target >= len(state.directory_files):
+            return jsonify({"error": "Invalid target index"}), 400
+
+        snapshot = _snapshot_carry(state)
+        _auto_save(state)
+
+        try:
+            sidecar_loaded = _load_file(state, state.directory_files[target], skip_preview=True)
+        except Exception as e:
+            return jsonify({"error": f"Failed to read: {e}"}), 400
+        state.current_index = target
+
+        if not sidecar_loaded:
+            _apply_carry(state, snapshot, categories)
+            if categories.get("geometry", False):
+                _redetect_in_crop(state)
+
+        try:
+            _run_pipeline(state)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+
+        if not state.preview_dims[0]:
+            from PIL import Image as PILImage
+            pil = PILImage.open(io.BytesIO(state.result_preview))
+            state.preview_dims = (pil.width, pil.height)
+            state.orig_preview = state.result_preview
+
+        _add_recent(state.directory_files[target])
+        h, w = state.original_img.shape[:2]
+        return jsonify({
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "crop_rect": None,
+            "filename": Path(state.directory_files[target]).name,
+            "dims": [h, w],
+            "preview_dims": list(state.preview_dims),
+            "sidecar_loaded": sidecar_loaded,
+            "current_index": state.current_index,
+            "total_files": len(state.directory_files),
+            "orientation": state.orientation,
+            "flip_h": state.flip_h,
+            "flip_v": state.flip_v,
+        })
 
     @app.route("/api/settings", methods=["GET"])
     def api_get_settings():
@@ -994,7 +1069,7 @@ def create_app() -> Flask:
         for key, val in data.items():
             if key in DEFAULT_SETTINGS:
                 state.settings[key] = val
-        state.carry_params = state.settings.get("carry_params", False)
+        state.carry_categories = state.settings.get("carry_categories", DEFAULT_SETTINGS["carry_categories"])
         _save_settings(state.settings)
         return jsonify(state.settings)
 

@@ -10,6 +10,16 @@ import numpy as np
 # Default color film Dmin for fallback
 _COLOR_DMIN = np.array([1.13, 0.49, 0.27], dtype=np.float32)
 
+# Single source of truth for carry-settings categories.
+# Keys are category names; values are field names in NegconvParams or GuiState.
+# Adding a new param? Put it in the right category here — carry logic reads this.
+CARRY_CATEGORIES = {
+    "tone":      ["gamma", "exposure", "black", "soft_clip", "offset"],
+    "wb":        ["wb_high", "wb_low"],
+    "film_base": ["dmin", "d_max"],
+    "geometry":  ["crop_rect", "orientation", "flip_h", "flip_v"],
+}
+
 
 @dataclass
 class NegconvParams:

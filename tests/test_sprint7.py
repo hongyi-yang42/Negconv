@@ -1,4 +1,4 @@
-"""Sprint 7 tests: profiles, WB eyedropper, undo/redo, black level."""
+"""Sprint 7 tests: profiles, WB eyedropper, undo/redo, black level, selective carry."""
 
 import json
 import os
@@ -257,3 +257,56 @@ class TestBlackLevel:
             sidecar = f.name + ".negconv.json"
             if os.path.isfile(sidecar):
                 os.unlink(sidecar)
+
+
+class TestSelectiveCarry:
+    def _make_tiff(self, tmp_path, name, value=30000):
+        path = str(tmp_path / name)
+        data = np.full((100, 100, 3), value, dtype=np.uint16)
+        tifffile.imwrite(path, data, photometric="rgb")
+        return path
+
+    def test_copy_settings_selective_carry(self, tmp_path):
+        """POST /api/copy-settings with only tone carries gamma but not WB."""
+        p1 = self._make_tiff(tmp_path, "aaa.tif", value=30000)
+        p2 = self._make_tiff(tmp_path, "bbb.tif", value=10000)
+
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+
+        try:
+            client.post("/api/load", json={"path": p1})
+            # Set custom gamma and WB
+            client.post("/api/params", json={"gamma": 6.0, "wb_high": [1.5, 1.0, 0.8]})
+
+            # Copy only tone to file 2 (no WB, no geometry)
+            resp = client.post("/api/copy-settings", json={
+                "target_index": 1,
+                "categories": {"tone": True, "wb": False, "film_base": False, "geometry": False},
+            })
+            assert resp.status_code == 200
+            data = resp.get_json()
+
+            # Gamma carried
+            assert abs(data["params"]["gamma"] - 6.0) < 0.01
+            # WB NOT carried — should be defaults
+            wb = data["params"]["wb_high"]
+            assert all(abs(v - 1.0) < 0.01 for v in wb), f"WB should be neutral, got {wb}"
+        finally:
+            for p in (p1, p2):
+                s = p + ".negconv.json"
+                if os.path.isfile(s):
+                    os.unlink(s)
+
+    def test_carry_categories_auto_discover(self):
+        """CARRY_CATEGORIES covers all NegconvParams fields."""
+        from negconv.params import CARRY_CATEGORIES, NegconvParams
+        import dataclasses
+
+        all_carry_fields = set()
+        for fields in CARRY_CATEGORIES.values():
+            all_carry_fields.update(fields)
+
+        for f in dataclasses.fields(NegconvParams):
+            assert f.name in all_carry_fields, f"Field '{f.name}' not in any CARRY_CATEGORIES"
