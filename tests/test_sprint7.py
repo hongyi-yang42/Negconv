@@ -300,13 +300,9 @@ class TestSelectiveCarry:
                     os.unlink(s)
 
     def test_carry_categories_auto_discover(self):
-        """CARRY_CATEGORIES covers all NegconvParams fields."""
-        from negconv.params import CARRY_CATEGORIES, NegconvParams
+        """PARAM_CATEGORIES covers all NegconvParams fields."""
+        from negconv.params import PARAM_CATEGORIES, NegconvParams
         import dataclasses
 
-        all_carry_fields = set()
-        for fields in CARRY_CATEGORIES.values():
-            all_carry_fields.update(fields)
-
         for f in dataclasses.fields(NegconvParams):
-            assert f.name in all_carry_fields, f"Field '{f.name}' not in any CARRY_CATEGORIES"
+            assert f.name in PARAM_CATEGORIES, f"Field '{f.name}' not in PARAM_CATEGORIES"

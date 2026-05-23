@@ -15,7 +15,7 @@ import numpy as np
 from flask import Flask, jsonify, render_template, request, send_file
 
 from ..io import apply_orientation, extract_exif, is_raw, read_image, write_image, write_jpeg, write_heic
-from ..params import NegconvParams, auto_detect, save_params, load_params, CARRY_CATEGORIES
+from ..params import NegconvParams, auto_detect, save_params, load_params, PARAM_CATEGORIES, carry_fields_for_categories
 from ..pipeline import invert
 from ..color import srgb_to_rec2020, rec2020_to_srgb
 from ..profiles import save_profile, load_profile, list_profiles, delete_profile
@@ -418,15 +418,13 @@ def _snapshot_carry(state: GuiState) -> dict:
 
 def _apply_carry(state: GuiState, snapshot: dict, categories: dict) -> None:
     """Apply carried fields from snapshot to state, using enabled categories."""
-    enabled_fields = set()
-    for cat, fields in CARRY_CATEGORIES.items():
-        if categories.get(cat, False):
-            enabled_fields.update(fields)
+    enabled_fields = carry_fields_for_categories(categories)
+    geo_fields = {"crop_rect", "orientation", "flip_h", "flip_v"}
 
     sp = snapshot["params"]
     for fname in enabled_fields:
-        if fname in ("crop_rect", "orientation", "flip_h", "flip_v"):
-            continue  # geometry handled below
+        if fname in geo_fields:
+            continue
         if fname in sp:
             val = sp[fname]
             setattr(state.params, fname, val.copy() if isinstance(val, np.ndarray) else val)
@@ -995,8 +993,12 @@ def create_app() -> Flask:
 
     @app.route("/api/carry-categories")
     def api_carry_categories():
+        # Derive category→fields from per-field PARAM_CATEGORIES
+        cats = {}
+        for fname, cat in PARAM_CATEGORIES.items():
+            cats.setdefault(cat, []).append(fname)
         return jsonify({
-            "categories": {cat: list(fields) for cat, fields in CARRY_CATEGORIES.items()},
+            "categories": cats,
             "enabled": state.carry_categories,
         })
 

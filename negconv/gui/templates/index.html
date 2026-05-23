@@ -726,7 +726,16 @@ $("btn-invert").addEventListener("click", doInvert);
 // Eyedropper (Dmin)
 $("btn-pick").addEventListener("click", () => {
   pickingDmin = !pickingDmin;
-  if (pickingDmin) { pickingWB = false; $("btn-pick-wb").classList.remove("btn-active"); }
+  if (pickingDmin) {
+    pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
+    // Show original negative so user samples from the right image
+    img.src = "/api/preview/orig?" + Date.now();
+    currentSrcIsOriginal = true;
+  } else {
+    // Return to result
+    img.src = "/api/preview/result?" + Date.now();
+    currentSrcIsOriginal = false;
+  }
   $("btn-pick").classList.toggle("btn-active", pickingDmin);
   img.style.cursor = (pickingDmin || pickingWB) ? "crosshair" : "default";
 });
