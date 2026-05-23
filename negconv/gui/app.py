@@ -724,6 +724,43 @@ def create_app() -> Flask:
             "auto_saved": _auto_save(state),
         })
 
+    @app.route("/api/pick-gray", methods=["POST"])
+    def api_pick_gray():
+        """Pick a neutral gray point from the original negative to set WB."""
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+
+        data = request.get_json(force=True)
+        orig_x, orig_y = data.get("x", 0), data.get("y", 0)
+
+        patch = _sample_dmin(state.original_img, orig_x, orig_y)
+        dmin = state.params.dmin
+
+        safe_patch = np.maximum(patch, np.float32(1e-6))
+        safe_dmin = np.maximum(dmin, np.float32(1e-6))
+        log_density = np.log10(safe_patch / safe_dmin)
+
+        if np.any(np.abs(log_density) < 0.01):
+            return jsonify({"error": "Too close to film base — pick an exposed area"}), 400
+
+        green_ld = log_density[1]
+        green_wb = state.params.wb_high[1]
+        new_wb = green_wb * green_ld / log_density
+        state.params.wb_high = np.clip(new_wb, 0.5, 2.0).astype(np.float32)
+
+        try:
+            _run_pipeline(state)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+
+        state.history.push(_snapshot_params(state))
+        return jsonify({
+            "wb_high": state.params.wb_high.tolist(),
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "auto_saved": _auto_save(state),
+        })
+
     @app.route("/api/info")
     def api_info():
         h, w = state.original_img.shape[:2] if state.original_img is not None else (0, 0)
