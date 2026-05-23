@@ -311,7 +311,11 @@ const img = $("preview");
 const viewerImg = $("viewer-img");
 
 // Reposition crop overlay after image loads (coords depend on rendered dimensions)
-img.addEventListener("load", () => updateCropOverlay());
+img.addEventListener("load", () => {
+  // Only show crop overlay if actively in crop mode — not after commit
+  if (cropMode) updateCropOverlay();
+  else { /* hide overlay */ $("mask-top").style.display="none"; $("mask-bottom").style.display="none"; $("mask-left").style.display="none"; $("mask-right").style.display="none"; $("crop-border").style.display="none"; $("crop-info").style.display="none"; }
+});
 
 // Flash a status message for 2 seconds
 let statusFlashTimer = null;

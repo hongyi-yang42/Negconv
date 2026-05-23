@@ -539,17 +539,9 @@ def create_app() -> Flask:
             return jsonify({"error": "No image loaded"}), 400
 
         data = request.get_json(force=True)
-        px, py = data.get("x", 0), data.get("y", 0)
+        orig_x, orig_y = data.get("x", 0), data.get("y", 0)
 
-        h, w = state.original_img.shape[:2]
-        preview_w, preview_h = state.preview_dims
-        if preview_w == 0 or preview_h == 0:
-            return jsonify({"error": "No preview loaded"}), 400
-
-        orig_x, orig_y = _preview_to_orig_coords(
-            px, py, preview_w, preview_h, w, h,
-        )
-
+        # JS already maps preview→original coords via previewToOriginalCoords
         dmin = _sample_dmin(state.original_img, orig_x, orig_y)
         state.params.dmin = dmin
 
@@ -707,6 +699,11 @@ def create_app() -> Flask:
 
         data = request.get_json(force=True)
         px, py = data.get("x", 0), data.get("y", 0)
+
+        # JS sends original-space coords; adjust for crop offset
+        if state.crop_rect:
+            px -= state.crop_rect["x"]
+            py -= state.crop_rect["y"]
 
         # We need the full-res inverted sRGB result to sample from
         result = invert(_get_pipeline_input(state), state.params)
