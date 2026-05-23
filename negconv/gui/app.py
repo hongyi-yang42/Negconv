@@ -315,7 +315,7 @@ def _start_thumbnails(files: list[str]) -> None:
         _thumb_executor.submit(_generate_thumb, f)
 
 
-def _load_file(state: GuiState, path: str, skip_preview: bool = False) -> bool:
+def _load_file(state: GuiState, path: str) -> bool:
     """Load a file into state. Returns True if sidecar was loaded.
 
     RAW files arrive as linear Rec.2020 (rawpy handles camera matrix).
@@ -354,12 +354,11 @@ def _load_file(state: GuiState, path: str, skip_preview: bool = False) -> bool:
         _apply_sidecar(state, sidecar)
         sidecar_loaded = True
 
-    if not skip_preview:
-        max_w = state.settings.get("preview_max_width", PREVIEW_MAX_WIDTH)
-        state.orig_preview = make_preview(img, max_w)
-        from PIL import Image as PILImage
-        pil_preview = PILImage.open(io.BytesIO(state.orig_preview))
-        state.preview_dims = (pil_preview.width, pil_preview.height)
+    max_w = state.settings.get("preview_max_width", PREVIEW_MAX_WIDTH)
+    state.orig_preview = make_preview(img, max_w)
+    from PIL import Image as PILImage
+    pil_preview = PILImage.open(io.BytesIO(state.orig_preview))
+    state.preview_dims = (pil_preview.width, pil_preview.height)
 
     # Push initial state into undo history
     state.history.push(_snapshot_params(state))
@@ -928,10 +927,9 @@ def create_app() -> Flask:
         # 2. Auto-save current file
         _auto_save(state)
 
-        # 3. Load new file (skip orig_preview — we'll make result_preview)
         new_path = state.directory_files[target]
         try:
-            sidecar_loaded = _load_file(state, new_path, skip_preview=True)
+            sidecar_loaded = _load_file(state, new_path)
         except Exception as e:
             return jsonify({"error": f"Failed to read: {e}"}), 400
         state.current_index = target
@@ -947,13 +945,6 @@ def create_app() -> Flask:
             _run_pipeline(state)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
-
-        # Compute preview_dims from result (orig_preview was skipped for navigate)
-        if not state.preview_dims[0]:
-            from PIL import Image as PILImage
-            pil = PILImage.open(io.BytesIO(state.result_preview))
-            state.preview_dims = (pil.width, pil.height)
-            state.orig_preview = state.result_preview
 
         # 6. Add to recent
         _add_recent(new_path)
@@ -1006,7 +997,7 @@ def create_app() -> Flask:
         _auto_save(state)
 
         try:
-            sidecar_loaded = _load_file(state, state.directory_files[target], skip_preview=True)
+            sidecar_loaded = _load_file(state, state.directory_files[target])
         except Exception as e:
             return jsonify({"error": f"Failed to read: {e}"}), 400
         state.current_index = target
@@ -1020,12 +1011,6 @@ def create_app() -> Flask:
             _run_pipeline(state)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
-
-        if not state.preview_dims[0]:
-            from PIL import Image as PILImage
-            pil = PILImage.open(io.BytesIO(state.result_preview))
-            state.preview_dims = (pil.width, pil.height)
-            state.orig_preview = state.result_preview
 
         _add_recent(state.directory_files[target])
         h, w = state.original_img.shape[:2]
