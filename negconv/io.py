@@ -35,9 +35,10 @@ def _read_icc_gamma(icc: bytes) -> float | None:
 def read_raw(path: str | Path) -> np.ndarray:
     """Read a RAW file and return linear float32 array shaped (H, W, 3).
 
-    Uses rawpy with unity WB (user_wb=[1,1,1,1]) and raw color space.
-    No white balance, no color matrix — raw sensor proportions preserved.
-    Stage 1 (divide by Dmin) handles channel normalization.
+    Uses rawpy with unity WB (user_wb=[1,1,1,1]) and Rec.2020 color space.
+    rawpy applies the camera-specific color matrix internally, producing
+    linear Rec.2020 output. Stage 1 (divide by Dmin) handles channel
+    normalization.
     """
     import rawpy
 
@@ -49,7 +50,7 @@ def read_raw(path: str | Path) -> np.ndarray:
             use_camera_wb=False,
             use_auto_wb=False,
             user_wb=[1, 1, 1, 1],
-            output_color=rawpy.ColorSpace.raw,
+            output_color=rawpy.ColorSpace.Rec2020,
         )
     return rgb.astype(np.float32) / 65535.0
 
@@ -97,16 +98,17 @@ def read_tiff(path: str | Path, linearize: bool = True) -> np.ndarray:
     return img
 
 
-def read_image(path: str | Path) -> np.ndarray:
-    """Read an image file (RAW or TIFF) and return linear float32 (H, W, 3).
+def read_image(path: str | Path) -> tuple[np.ndarray, bool]:
+    """Read an image file (RAW or TIFF) and return (linear float32, is_raw).
 
-    Detects file type by extension. RAW files use rawpy (already linear).
-    TIFF files are linearized via ICC gamma if present.
+    RAW files return linear Rec.2020 (rawpy handles camera matrix).
+    TIFF files return linear sRGB (scanner color space).
+    The is_raw flag tells the caller whether to apply sRGB→Rec.2020 conversion.
     """
     ext = Path(path).suffix.lower()
     if ext in RAW_EXTENSIONS:
-        return read_raw(path)
-    return read_tiff(path)
+        return read_raw(path), True
+    return read_tiff(path), False
 
 
 def is_raw(path: str | Path) -> bool:

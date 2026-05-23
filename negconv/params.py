@@ -143,15 +143,27 @@ def detect_dmax(img: np.ndarray, dmin: np.ndarray) -> float:
     return max(0.5, min(dmax, 4.0))
 
 
-def auto_detect(img: np.ndarray, fallback_preset: str = "color") -> NegconvParams:
+def detect_dmin_percentile(image: np.ndarray) -> np.ndarray:
+    """Estimate Dmin from image statistics when no border is available.
+
+    Uses 99.5th percentile per channel (brightest pixels ≈ film base in linear space).
+    """
+    flat = image.reshape(-1, 3)
+    return np.percentile(flat, 99.5, axis=0).astype(np.float32)
+
+
+def auto_detect(img: np.ndarray, fallback_preset: str = "color",
+                dmin_mode: str = "auto") -> NegconvParams:
     """Auto-detect all parameters from image content.
 
     Detects Dmin from border pixels and Dmax from density range.
-    Falls back to preset defaults if detection fails.
+    Falls back to percentile estimate or preset defaults if detection fails.
 
     Args:
         img: Linear float32 image, shape (H, W, 3).
         fallback_preset: "color" or "bw" if auto-detect fails.
+        dmin_mode: "auto" (border → percentile → preset), "percentile" (skip border),
+                   or "manual" (caller sets dmin via CLI overrides).
 
     Returns:
         NegconvParams with detected or fallback values.
@@ -159,9 +171,22 @@ def auto_detect(img: np.ndarray, fallback_preset: str = "color") -> NegconvParam
     params = NegconvParams.bw_film() if fallback_preset == "bw" else NegconvParams.color_film()
 
     try:
-        dmin = detect_dmin(img)
-        if dmin is None:
-            print("warning: no film border detected, using preset defaults", file=sys.stderr)
+        dmin = None
+        dmin_source = "preset"
+
+        if dmin_mode == "percentile":
+            dmin = detect_dmin_percentile(img)
+            dmin_source = "percentile"
+        elif dmin_mode == "auto":
+            dmin = detect_dmin(img)
+            if dmin is not None:
+                dmin_source = "border"
+            else:
+                dmin = detect_dmin_percentile(img)
+                dmin_source = "percentile"
+                print("info: no film border detected, using percentile estimate", file=sys.stderr)
+
+        if dmin is None or dmin_mode == "manual":
             return params
 
         # Sanity check: Dmin must be positive and bounded

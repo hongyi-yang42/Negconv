@@ -11,6 +11,7 @@ from . import __version__
 from .io import is_raw, read_image, write_image, write_jpeg, write_heic
 from .params import NegconvParams, auto_detect, load_params, save_params
 from .pipeline import invert
+from .profiles import save_profile, load_profile, list_profiles as list_profiles_fn
 
 SUPPORTED_EXTENSIONS = {
     ".tif", ".tiff", ".cr2", ".cr3", ".arw", ".raf", ".nef",
@@ -38,6 +39,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dmin-g", type=float, default=None)
     p.add_argument("--dmin-b", type=float, default=None)
     p.add_argument("--dmax", type=float, default=None)
+    p.add_argument(
+        "--dmin-mode", choices=["auto", "percentile", "manual"], default="auto",
+        help="Dmin detection mode: auto (border→percentile→preset), percentile, manual (default: auto)",
+    )
 
     # White balance
     p.add_argument("--wb-high-r", type=float, default=None)
@@ -54,9 +59,21 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--soft-clip", type=float, default=None)
     p.add_argument("--offset", type=float, default=None)
 
+    # Black level override
+    p.add_argument("--black-level", type=str, default=None, metavar="R,Gr,Gb,B",
+                   help="Override 4-channel black level (comma-separated)")
+
     # JSON sidecar
     p.add_argument("--save-params", type=str, default=None, metavar="JSON")
     p.add_argument("--load-params", type=str, default=None, metavar="JSON")
+
+    # Named profiles
+    p.add_argument("--save-profile", type=str, default=None, metavar="NAME",
+                   help="Save resolved params as a named profile")
+    p.add_argument("--profile", type=str, default=None, metavar="NAME",
+                   help="Load a named profile instead of auto-detect")
+    p.add_argument("--list-profiles", action="store_true",
+                   help="List saved profiles and exit")
 
     # Output format
     p.add_argument(
@@ -124,15 +141,17 @@ def _apply_cli_overrides(params: NegconvParams, args: argparse.Namespace) -> Non
 
 
 def _resolve_params(args: argparse.Namespace, img: np.ndarray) -> NegconvParams:
-    """Determine params from load-params, preset, or auto-detect, then apply CLI overrides."""
-    if args.load_params:
+    """Determine params from profile, load-params, preset, or auto-detect, then apply CLI overrides."""
+    if args.profile:
+        params = load_profile(args.profile)
+    elif args.load_params:
         params = load_params(args.load_params)
     elif args.preset == "bw":
         params = NegconvParams.bw_film()
     elif args.preset == "color":
         params = NegconvParams.color_film()
     else:
-        params = auto_detect(img)
+        params = auto_detect(img, dmin_mode=args.dmin_mode)
 
     _apply_cli_overrides(params, args)
     return params
@@ -166,9 +185,15 @@ def _process_single(
     params: NegconvParams, dtype: str,
     fmt: str = "tiff", quality: int = 92,
 ) -> None:
-    """Read, invert, write a single file."""
-    img = read_image(input_path)
+    """Read, convert to Rec.2020, invert, convert back to sRGB, write."""
+    from .color import srgb_to_rec2020, rec2020_to_srgb
+
+    img, raw_input = read_image(input_path)
+    if not raw_input:
+        img = srgb_to_rec2020(img)
     positive = invert(img, params)
+    positive = rec2020_to_srgb(positive)
+    positive = np.clip(positive, 0, None)
     _write_output(output_path, positive, fmt, dtype, quality)
 
     src_type = "RAW" if is_raw(input_path) else "TIFF"
@@ -198,6 +223,14 @@ def main() -> None:
         run_gui(port=args.port)
         return
 
+    if args.list_profiles:
+        profiles = list_profiles_fn()
+        if not profiles:
+            print("No saved profiles.")
+        for p in profiles:
+            print(f"  {p['name']}  ({p['created'][:10]})")
+        return
+
     if not args.input:
         parser.error("input is required when not using --gui")
     if not args.output:
@@ -219,7 +252,7 @@ def main() -> None:
         output_path.mkdir(parents=True, exist_ok=True)
 
         # Read first image to resolve params (auto-detect needs pixel data)
-        first_img = read_image(inputs[0])
+        first_img, _ = read_image(inputs[0])
         params = _resolve_params(args, first_img)
 
         # Auto-save params for reproducibility
@@ -232,6 +265,9 @@ def main() -> None:
 
         if args.save_params:
             save_params(params, args.save_params)
+        if args.save_profile:
+            save_profile(args.save_profile, params)
+            print(f"  Profile saved: {args.save_profile}")
 
         for i, inp in enumerate(inputs, 1):
             stem = Path(inp).stem
@@ -246,13 +282,22 @@ def main() -> None:
 
     else:
         # Single file mode
-        img = read_image(str(input_path))
+        img, raw_input = read_image(str(input_path))
         params = _resolve_params(args, img)
 
         if args.save_params:
             save_params(params, args.save_params)
+        if args.save_profile:
+            save_profile(args.save_profile, params)
+            print(f"  Profile saved: {args.save_profile}")
 
+        from .color import srgb_to_rec2020, rec2020_to_srgb
+
+        if not raw_input:
+            img = srgb_to_rec2020(img)
         positive = invert(img, params)
+        positive = rec2020_to_srgb(positive)
+        positive = np.clip(positive, 0, None)
         _write_output(str(output_path), positive, fmt, args.dtype, args.quality)
 
         src_type = "RAW" if is_raw(str(input_path)) else "TIFF"

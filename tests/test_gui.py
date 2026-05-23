@@ -433,7 +433,7 @@ class TestAutoSaveSidecar:
 class TestRecentFiles:
     def test_recent_files_persisted(self, tmp_path):
         """Loading a file adds it to recent files list."""
-        from negconv.gui.app import _load_recent, _save_recent, RECENT_FILE
+        from negconv.gui.app import _load_recent, RECENT_FILE
 
         app = create_app()
         app.config["TESTING"] = True
@@ -444,9 +444,8 @@ class TestRecentFiles:
         tifffile.imwrite(tif_path, data, photometric="rgb")
 
         client.post("/api/load", json={"path": tif_path})
-        resp = client.get("/api/recent")
-        assert resp.status_code == 200
-        recent = resp.get_json()
+        # Check the underlying store (API filters temp paths)
+        recent = _load_recent()
         paths = [r["path"] for r in recent]
         assert tif_path in paths
 

@@ -102,16 +102,22 @@ class TestAutoDetect:
         np.testing.assert_allclose(params.dmin[0], 0.15, atol=0.01)
 
     def test_without_border_fallback(self):
-        """No film border → falls back to preset defaults."""
+        """No film border → percentile fallback gives image statistics."""
         img = np.full((200, 200, 3), 0.05, dtype=np.float32)
         params = auto_detect(img, fallback_preset="color")
-        # Should be the color film defaults
+        # Percentile of uniform 0.05 image = 0.05
+        np.testing.assert_allclose(params.dmin, [0.05, 0.05, 0.05], atol=0.01)
+
+    def test_without_border_manual_mode(self):
+        """Manual mode skips detection, returns preset defaults."""
+        img = np.full((200, 200, 3), 0.05, dtype=np.float32)
+        params = auto_detect(img, fallback_preset="color", dmin_mode="manual")
         np.testing.assert_allclose(params.dmin, [1.13, 0.49, 0.27], atol=0.01)
 
     def test_bw_fallback(self):
-        """Can fall back to B&W preset."""
+        """Can fall back to B&W preset in manual mode."""
         img = np.full((200, 200, 3), 0.05, dtype=np.float32)
-        params = auto_detect(img, fallback_preset="bw")
+        params = auto_detect(img, fallback_preset="bw", dmin_mode="manual")
         np.testing.assert_allclose(params.dmin, [1.0, 1.0, 1.0], atol=0.01)
 
     def test_returns_params_object(self):

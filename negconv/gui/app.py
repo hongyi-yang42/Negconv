@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import io
 import json
@@ -16,6 +17,8 @@ from flask import Flask, jsonify, render_template, request, send_file
 from ..io import apply_orientation, extract_exif, is_raw, read_image, write_image, write_jpeg, write_heic
 from ..params import NegconvParams, auto_detect, save_params, load_params
 from ..pipeline import invert
+from ..color import srgb_to_rec2020, rec2020_to_srgb
+from ..profiles import save_profile, load_profile, list_profiles, delete_profile
 from .viewer import make_preview
 
 PREVIEW_MAX_WIDTH = 1200
@@ -51,6 +54,74 @@ def _save_settings(settings: dict) -> None:
 
 
 @dataclass
+class ParamHistory:
+    """In-memory undo/redo stack for params. Max 50 entries.
+
+    Stack stores snapshots AFTER each action. Index points to the current state.
+    undo() decrements index, redo() increments it.
+    """
+    stack: list[dict] = field(default_factory=list)
+    index: int = -1  # points to current state in stack
+    max_depth: int = 50
+
+    def push(self, snapshot: dict) -> None:
+        """Push a new state (after an action). Discards redo entries ahead."""
+        # Discard any redo states ahead of current index
+        self.stack = self.stack[:self.index + 1]
+        self.stack.append(snapshot)
+        if len(self.stack) > self.max_depth:
+            self.stack.pop(0)
+        self.index = len(self.stack) - 1
+
+    def undo(self) -> dict | None:
+        """Go back one step. Returns the previous state, or None if at start."""
+        if self.index <= 0:
+            return None
+        self.index -= 1
+        return copy.deepcopy(self.stack[self.index])
+
+    def redo(self) -> dict | None:
+        """Go forward one step. Returns the next state, or None if at end."""
+        if self.index >= len(self.stack) - 1:
+            return None
+        self.index += 1
+        return copy.deepcopy(self.stack[self.index])
+
+    def clear(self) -> None:
+        self.stack.clear()
+        self.index = -1
+
+
+def _snapshot_params(state: GuiState) -> dict:
+    """Capture a serializable snapshot of state params."""
+    return {
+        "dmin": state.params.dmin.tolist(),
+        "d_max": state.params.d_max,
+        "wb_high": state.params.wb_high.tolist(),
+        "wb_low": state.params.wb_low.tolist(),
+        "offset": state.params.offset,
+        "exposure": state.params.exposure,
+        "black": state.params.black,
+        "gamma": state.params.gamma,
+        "soft_clip": state.params.soft_clip,
+    }
+
+
+def _restore_snapshot(state: GuiState, snap: dict) -> None:
+    """Apply a snapshot back to state params."""
+    p = state.params
+    p.dmin = np.array(snap["dmin"], dtype=np.float32)
+    p.d_max = snap["d_max"]
+    p.wb_high = np.array(snap["wb_high"], dtype=np.float32)
+    p.wb_low = np.array(snap["wb_low"], dtype=np.float32)
+    p.offset = snap["offset"]
+    p.exposure = snap["exposure"]
+    p.black = snap["black"]
+    p.gamma = snap["gamma"]
+    p.soft_clip = snap["soft_clip"]
+
+
+@dataclass
 class GuiState:
     original_img: np.ndarray | None = None
     params: NegconvParams = field(default_factory=NegconvParams.color_film)
@@ -63,10 +134,13 @@ class GuiState:
     orientation: int = 0      # 0=normal, 1=90°CW, 2=180°, 3=270°CW
     flip_h: bool = False
     flip_v: bool = False
+    is_raw_input: bool = False  # True if source is RAW (already Rec.2020)
+    black_level: list[int] = field(default_factory=lambda: [0, 0, 0, 0])
     directory_files: list[str] = field(default_factory=list)
     current_index: int = 0
     carry_params: bool = False
     settings: dict = field(default_factory=lambda: dict(DEFAULT_SETTINGS))
+    history: ParamHistory = field(default_factory=ParamHistory)
 
 
 def _sample_dmin(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
@@ -256,16 +330,37 @@ def _start_thumbnails(files: list[str]) -> None:
 
 
 def _load_file(state: GuiState, path: str, skip_preview: bool = False) -> bool:
-    """Load a file into state. Returns True if sidecar was loaded."""
-    img = read_image(path)
+    """Load a file into state. Returns True if sidecar was loaded.
+
+    RAW files arrive as linear Rec.2020 (rawpy handles camera matrix).
+    TIFF files arrive as linear sRGB and are converted to Rec.2020.
+    """
+    img, raw_input = read_image(path)
+    state.is_raw_input = raw_input
+    if not raw_input:
+        img = srgb_to_rec2020(img)
     state.original_img = img
     state.file_path = path
+
+    # Read black level per channel for RAW files
+    if raw_input:
+        try:
+            import rawpy
+            with rawpy.imread(path) as raw:
+                bl = raw.black_level_per_channel
+                state.black_level = [int(v) for v in bl] if bl else [0, 0, 0, 0]
+        except Exception:
+            state.black_level = [0, 0, 0, 0]
+    else:
+        state.black_level = [0, 0, 0, 0]
+
     state.params = auto_detect(img)
     state.crop_rect = None
     state.source_exif = extract_exif(path)
     state.orientation = 0
     state.flip_h = False
     state.flip_v = False
+    state.history.clear()
 
     sidecar_loaded = False
     sidecar = _load_sidecar(path)
@@ -280,15 +375,24 @@ def _load_file(state: GuiState, path: str, skip_preview: bool = False) -> bool:
         pil_preview = PILImage.open(io.BytesIO(state.orig_preview))
         state.preview_dims = (pil_preview.width, pil_preview.height)
 
+    # Push initial state into undo history
+    state.history.push(_snapshot_params(state))
+
     return sidecar_loaded
 
 
 def _run_pipeline(state: GuiState) -> None:
-    """Run inversion pipeline and store result preview."""
+    """Run inversion pipeline and store result preview.
+
+    Pipeline runs in Rec.2020 working space. Result is converted back to
+    sRGB for preview and export (except TIFF-32f which stays in Rec.2020).
+    """
     result = invert(_get_pipeline_input(state), state.params)
+    result_srgb = rec2020_to_srgb(result)
+    result_srgb = np.clip(result_srgb, 0, None)
     max_w = state.settings.get("preview_max_width", PREVIEW_MAX_WIDTH)
     quality = state.settings.get("preview_quality", 90)
-    state.result_preview = make_preview(result, max_w, quality=quality)
+    state.result_preview = make_preview(result_srgb, max_w, quality=quality)
 
 
 def _redetect_in_crop(state: GuiState) -> None:
@@ -406,11 +510,11 @@ def create_app() -> Flask:
         state.params.dmin = dmin
 
         try:
-            result = invert(_get_pipeline_input(state), state.params)
-            state.result_preview = make_preview(result, PREVIEW_MAX_WIDTH)
+            _run_pipeline(state)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
 
+        state.history.push(_snapshot_params(state))
         return jsonify({
             "dmin": dmin.tolist(),
             "preview": "/api/preview/result",
@@ -426,6 +530,7 @@ def create_app() -> Flask:
     def api_set_params():
         data = request.get_json(force=True)
         _update_params_from_dict(state.params, data)
+        state.history.push(_snapshot_params(state))
         saved = _auto_save(state)
         return jsonify({**_params_to_dict(state.params, state.crop_rect), "auto_saved": saved})
 
@@ -437,6 +542,7 @@ def create_app() -> Flask:
             state.params = NegconvParams.bw_film()
         else:
             return jsonify({"error": f"Unknown preset: {name}"}), 400
+        state.history.push(_snapshot_params(state))
         return jsonify(_params_to_dict(state.params, state.crop_rect))
 
     @app.route("/api/reset", methods=["POST"])
@@ -466,6 +572,140 @@ def create_app() -> Flask:
             "dims": [h, w],
             "preview_dims": list(state.preview_dims),
             "sidecar_loaded": False,
+            "orientation": state.orientation,
+            "flip_h": state.flip_h,
+            "flip_v": state.flip_v,
+        })
+
+    # ---- Profile endpoints ----
+    @app.route("/api/profiles", methods=["GET"])
+    def api_list_profiles():
+        return jsonify(list_profiles())
+
+    @app.route("/api/profiles", methods=["POST"])
+    def api_save_profile():
+        data = request.get_json(force=True)
+        name = data.get("name", "").strip()
+        if not name:
+            return jsonify({"error": "Profile name required"}), 400
+        path = save_profile(name, state.params)
+        return jsonify({"ok": True, "name": name, "path": str(path)})
+
+    @app.route("/api/profiles/load", methods=["POST"])
+    def api_load_profile():
+        data = request.get_json(force=True)
+        name = data.get("name", "").strip()
+        if not name:
+            return jsonify({"error": "Profile name required"}), 400
+        try:
+            loaded = load_profile(name)
+        except FileNotFoundError:
+            return jsonify({"error": f"Profile not found: {name}"}), 404
+        # Copy loaded params into state
+        state.params.dmin = loaded.dmin.copy()
+        state.params.d_max = loaded.d_max
+        state.params.wb_high = loaded.wb_high.copy()
+        state.params.wb_low = loaded.wb_low.copy()
+        state.params.offset = loaded.offset
+        state.params.exposure = loaded.exposure
+        state.params.black = loaded.black
+        state.params.gamma = loaded.gamma
+        state.params.soft_clip = loaded.soft_clip
+        _auto_save(state)
+        return jsonify(_params_to_dict(state.params, state.crop_rect))
+
+    @app.route("/api/profiles/<name>", methods=["DELETE"])
+    def api_delete_profile(name):
+        deleted = delete_profile(name)
+        if not deleted:
+            return jsonify({"error": f"Profile not found: {name}"}), 404
+        return jsonify({"ok": True})
+
+    # ---- Undo / Redo ----
+    @app.route("/api/undo", methods=["POST"])
+    def api_undo():
+        snap = state.history.undo()
+        if snap is None:
+            return jsonify({"error": "Nothing to undo"}), 400
+        _restore_snapshot(state, snap)
+        try:
+            _run_pipeline(state)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+        _auto_save(state)
+        return jsonify({
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "preview": "/api/preview/result",
+        })
+
+    @app.route("/api/redo", methods=["POST"])
+    def api_redo():
+        snap = state.history.redo()
+        if snap is None:
+            return jsonify({"error": "Nothing to redo"}), 400
+        _restore_snapshot(state, snap)
+        try:
+            _run_pipeline(state)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+        _auto_save(state)
+        return jsonify({
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "preview": "/api/preview/result",
+        })
+
+    # ---- WB eyedropper ----
+    @app.route("/api/pick-wb", methods=["POST"])
+    def api_pick_wb():
+        """Sample a neutral patch from the inverted result to set WB."""
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+
+        data = request.get_json(force=True)
+        px, py = data.get("x", 0), data.get("y", 0)
+
+        # We need the full-res inverted sRGB result to sample from
+        result = invert(_get_pipeline_input(state), state.params)
+        result_srgb = rec2020_to_srgb(result)
+        result_srgb = np.clip(result_srgb, 0, None)
+
+        h, w = result_srgb.shape[:2]
+        half = 2
+        y0 = max(py - half, 0)
+        y1 = min(py + half + 1, h)
+        x0 = max(px - half, 0)
+        x1 = min(px + half + 1, w)
+        patch = result_srgb[y0:y1, x0:x1, :]
+        per_ch = np.mean(patch, axis=(0, 1)).astype(np.float32)
+        luminance = float(np.mean(per_ch))
+        if luminance < 1e-6:
+            return jsonify({"error": "Sampled area too dark for WB"}), 400
+        # Guard against zero channels to avoid division errors
+        safe_ch = np.maximum(per_ch, 1e-6)
+        correction = luminance / safe_ch
+        state.params.wb_high = np.clip(state.params.wb_high * correction, 0.5, 2.0).astype(np.float32)
+
+        try:
+            _run_pipeline(state)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+
+        state.history.push(_snapshot_params(state))
+        return jsonify({
+            "wb_high": state.params.wb_high.tolist(),
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "auto_saved": _auto_save(state),
+        })
+
+    @app.route("/api/info")
+    def api_info():
+        h, w = state.original_img.shape[:2] if state.original_img is not None else (0, 0)
+        return jsonify({
+            "filename": Path(state.file_path).name if state.file_path else "",
+            "dims": [h, w],
+            "is_raw": state.is_raw_input,
+            "black_level": state.black_level,
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
@@ -519,8 +759,7 @@ def create_app() -> Flask:
         state.crop_rect = None
 
         try:
-            result = invert(state.original_img, state.params)
-            state.result_preview = make_preview(result, PREVIEW_MAX_WIDTH)
+            _run_pipeline(state)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
 
@@ -614,8 +853,12 @@ def create_app() -> Flask:
     @app.route("/api/recent")
     def api_recent():
         recent = _load_recent()
-        # Filter out paths that no longer exist
-        recent = [r for r in recent if os.path.isfile(r.get("path", ""))]
+        def _is_temp_path(p: str) -> bool:
+            import re
+            return bool(re.match(r'^(/private)?/tmp/tmp', p) or re.match(r'^(/private)?/var/folders/', p))
+        recent = [r for r in recent
+                  if os.path.isfile(r.get("path", ""))
+                  and not _is_temp_path(r["path"])]
         return jsonify(recent)
 
     @app.route("/api/directory")
@@ -778,6 +1021,13 @@ def create_app() -> Flask:
             result = invert(_get_pipeline_input(state), state.params)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
+
+        # Convert Rec.2020 → sRGB for all formats (TIFF-32f keeps Rec.2020)
+        if fmt == "tiff32f":
+            pass  # Keep in Rec.2020 working space
+        else:
+            result = rec2020_to_srgb(result)
+            result = np.clip(result, 0, None)
 
         # Apply orientation after crop, before write
         result = apply_orientation(result, state.orientation, state.flip_h, state.flip_v)

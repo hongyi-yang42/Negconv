@@ -124,6 +124,19 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     </div>
   </div>
 
+  <!-- Profiles -->
+  <div class="section">
+    <h2>Profiles</h2>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <select id="profile-select" style="flex:1;background:#333;border:1px solid #444;color:#ddd;padding:4px;border-radius:3px;font-size:0.85em;">
+        <option value="">-- saved profiles --</option>
+      </select>
+      <button class="btn" id="btn-load-profile">Load</button>
+      <button class="btn" id="btn-save-profile" title="Save current params as a named profile">Save</button>
+      <button class="btn" id="btn-delete-profile" title="Delete selected profile" style="color:#c66;">Del</button>
+    </div>
+  </div>
+
   <!-- Tone -->
   <div class="section">
     <h2>Tone</h2>
@@ -139,6 +152,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <details class="section">
     <summary><h2 style="display:inline;cursor:pointer;">White Balance</h2></summary>
     <div style="margin-top:6px;">
+      <div style="display:flex;gap:6px;margin-bottom:6px;">
+        <button class="btn" id="btn-pick-wb" title="Pick neutral point for WB (W)">Pick WB</button>
+      </div>
       <div style="font-size:0.8em;color:#777;margin-bottom:4px;">Highlight</div>
       <label><span class="lbl" data-target="sl-wbh-r" title="Highlight WB — Red. 1.0 = neutral. Range: 0.5–2.0. Alt+click to reset.">R</span> <input type="range" id="sl-wbh-r" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-r" min="0.5" max="2.0" step="0.01" value="1.00"></label>
       <label><span class="lbl" data-target="sl-wbh-g" title="Highlight WB — Green. 1.0 = neutral. Range: 0.5–2.0. Alt+click to reset.">G</span> <input type="range" id="sl-wbh-g" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-g" min="0.5" max="2.0" step="0.01" value="1.00"></label>
@@ -176,6 +192,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
       <label><span class="lbl">Quality</span> <input type="range" id="export-quality" min="10" max="100" step="1" value="92"> <span id="quality-val" style="font-size:0.85em;">92</span></label>
     </div>
   </div>
+
+  <!-- Advanced -->
+  <details class="section">
+    <summary><h2 style="display:inline;cursor:pointer;">Advanced</h2></summary>
+    <div style="margin-top:6px;font-size:0.8em;color:#888;">
+      <div>Black level: <span id="black-level-info">—</span></div>
+    </div>
+  </details>
 
   <!-- Toolbar -->
   <div style="display:flex;gap:6px;margin-top:auto;padding-top:8px;border-top:1px solid #333;">
@@ -234,6 +258,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 <script>
 // State
 let pickingDmin = false;
+let pickingWB = false;
 let cropMode = false;
 let cropDrawing = false;
 let cropStartX = 0, cropStartY = 0;
@@ -251,6 +276,23 @@ let clientOrientation = 0;
 let clientFlipH = false;
 let clientFlipV = false;
 let currentTotalFiles = 0;
+
+// Centralized state reset — single source of truth for clearing image-dependent state.
+// Called by applyLoadResponse (new image) and Clear button (no image).
+function resetImageState() {
+  previewWidth = 0; previewHeight = 0;
+  currentFilename = ""; currentDims = [0, 0];
+  cropRectOrig = null;
+  clientOrientation = 0; clientFlipH = false; clientFlipV = false;
+  state_currentIndex = 0; currentTotalFiles = 0;
+  currentSrcIsOriginal = false; lastResultSrc = ""; lastOrigSrc = "";
+  pickingDmin = false; pickingWB = false; cropMode = false; cropDrawing = false;
+  $("btn-pick").classList.remove("btn-active");
+  $("btn-pick-wb").classList.remove("btn-active");
+  $("btn-crop").classList.remove("btn-active");
+  $("btn-before-after").classList.remove("btn-active");
+  img.style.cursor = "default";
+}
 
 const $ = id => document.getElementById(id);
 const img = $("preview");
@@ -605,6 +647,7 @@ function updateUI(params) {
 
 // Shared handler for /api/load and /api/navigate responses
 function applyLoadResponse(data) {
+  resetImageState();
   img.src = (data.preview || "/api/preview/orig") + "?" + Date.now();
   img.style.display = "block";
   if (data.preview_dims) {
@@ -626,12 +669,13 @@ function applyLoadResponse(data) {
   updateStatus();
   updateCropOverlay();
   fitToWindow();
-  // Reset modes
-  currentSrcIsOriginal = false;
-  $("btn-before-after").classList.remove("btn-active");
-  if (cropMode) { cropMode = false; $("btn-crop").classList.remove("btn-active"); }
-  if (pickingDmin) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); }
-  img.style.cursor = "default";
+  // Fetch advanced info (black level)
+  fetch("/api/info").then(r => r.json()).then(info => {
+    const bl = info.black_level || [0,0,0,0];
+    $("black-level-info").textContent = info.is_raw
+      ? `R:${bl[0]} Gr:${bl[1]} Gb:${bl[2]} B:${bl[3]} (RAW)`
+      : `R:0 Gr:0 Gb:0 B:0 (TIFF)`;
+  }).catch(() => {});
 }
 
 // Load image
@@ -671,15 +715,24 @@ function doInvert() {
 }
 $("btn-invert").addEventListener("click", doInvert);
 
-// Eyedropper
+// Eyedropper (Dmin)
 $("btn-pick").addEventListener("click", () => {
   pickingDmin = !pickingDmin;
+  if (pickingDmin) { pickingWB = false; $("btn-pick-wb").classList.remove("btn-active"); }
   $("btn-pick").classList.toggle("btn-active", pickingDmin);
-  img.style.cursor = pickingDmin ? "crosshair" : "default";
+  img.style.cursor = (pickingDmin || pickingWB) ? "crosshair" : "default";
+});
+
+// Eyedropper (WB)
+$("btn-pick-wb").addEventListener("click", () => {
+  pickingWB = !pickingWB;
+  if (pickingWB) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); }
+  $("btn-pick-wb").classList.toggle("btn-active", pickingWB);
+  img.style.cursor = (pickingDmin || pickingWB) ? "crosshair" : "default";
 });
 
 img.addEventListener("click", (e) => {
-  if (!pickingDmin) return;
+  if (!pickingDmin && !pickingWB) return;
   const rect = img.getBoundingClientRect();
   const scaleX = previewWidth / rect.width;
   const scaleY = previewHeight / rect.height;
@@ -688,6 +741,24 @@ img.addEventListener("click", (e) => {
   const orig = previewToOriginalCoords(px, py);
 
   setLoading(true);
+  if (pickingWB) {
+    fetch("/api/pick-wb", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({x: orig.x, y: orig.y}),
+    })
+    .then(r => r.json())
+    .then(data => {
+      setLoading(false);
+      if (data.error) { alert(data.error); return; }
+      updateUI(data.params);
+      img.src = "/api/preview/result?" + Date.now();
+      if (data.auto_saved) flashStatus("Auto-saved");
+    })
+    .catch(e => { setLoading(false); alert("WB pick failed: " + e); });
+    return;
+  }
+
   fetch("/api/pick-dmin", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -787,8 +858,8 @@ function updateCropOverlay() {
 $("btn-crop").addEventListener("click", () => {
   cropMode = !cropMode;
   $("btn-crop").classList.toggle("btn-active", cropMode);
-  if (cropMode) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); }
-  img.style.cursor = cropMode ? "crosshair" : (pickingDmin ? "crosshair" : "default");
+  if (cropMode) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); pickingWB = false; $("btn-pick-wb").classList.remove("btn-active"); }
+  img.style.cursor = cropMode ? "crosshair" : ((pickingDmin || pickingWB) ? "crosshair" : "default");
 });
 
 // Clear crop
@@ -866,12 +937,12 @@ window.addEventListener("mouseup", (e) => {
   const o1 = previewToOriginalCoords(p1.x, p1.y);
   const o2 = previewToOriginalCoords(p2.x, p2.y);
 
-  // Clamp to image bounds
+  // Rotation can "cross" corners — take min/max to form a valid rect
   const oh = currentDims[0], ow = currentDims[1];
-  const cx = Math.max(0, o1.x);
-  const cy = Math.max(0, o1.y);
-  const cw = Math.min(ow, o2.x) - cx;
-  const ch = Math.min(oh, o2.y) - cy;
+  const cx = Math.max(0, Math.min(o1.x, o2.x));
+  const cy = Math.max(0, Math.min(o1.y, o2.y));
+  const cw = Math.min(ow, Math.max(o1.x, o2.x)) - cx;
+  const ch = Math.min(oh, Math.max(o1.y, o2.y)) - cy;
 
   if (cw < 10 || ch < 10) { flashStatus("Crop too small"); return; }
 
@@ -1011,6 +1082,61 @@ $("btn-preset-bw").addEventListener("click", () => {
   .then(r => r.json()).then(data => updateUI(data));
 });
 
+// ---- Profiles ----
+function refreshProfiles() {
+  fetch("/api/profiles").then(r => r.json()).then(profiles => {
+    const sel = $("profile-select");
+    sel.innerHTML = '<option value="">-- saved profiles --</option>';
+    profiles.forEach(p => {
+      const opt = document.createElement("option");
+      opt.value = p.name;
+      opt.textContent = p.name;
+      sel.appendChild(opt);
+    });
+  }).catch(() => {});
+}
+refreshProfiles();
+
+$("btn-load-profile").addEventListener("click", () => {
+  const name = $("profile-select").value;
+  if (!name) return;
+  fetch("/api/profiles/load", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name}),
+  }).then(r => r.json()).then(data => {
+    if (data.error) { alert(data.error); return; }
+    updateUI(data);
+    doInvert();
+    flashStatus("Loaded profile: " + name);
+  });
+});
+
+$("btn-save-profile").addEventListener("click", () => {
+  const name = prompt("Profile name:");
+  if (!name || !name.trim()) return;
+  fetch("/api/profiles", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({name: name.trim()}),
+  }).then(r => r.json()).then(data => {
+    if (data.error) { alert(data.error); return; }
+    refreshProfiles();
+    flashStatus("Saved profile: " + name.trim());
+  });
+});
+
+$("btn-delete-profile").addEventListener("click", () => {
+  const name = $("profile-select").value;
+  if (!name) return;
+  if (!confirm("Delete profile '" + name + "'?")) return;
+  fetch("/api/profiles/" + encodeURIComponent(name), {method: "DELETE"})
+  .then(r => r.json()).then(data => {
+    refreshProfiles();
+    flashStatus(data.ok ? "Deleted profile: " + name : data.error);
+  });
+});
+
 // Export
 const exportFormat = $("export-format");
 const qualityRow = $("quality-row");
@@ -1086,7 +1212,7 @@ $("viewer").addEventListener("wheel", (e) => {
 }, {passive: false});
 
 $("viewer").addEventListener("mousedown", (e) => {
-  if (e.button === 0 && !pickingDmin && !cropMode) {
+  if (e.button === 0 && !pickingDmin && !pickingWB && !cropMode) {
     isPanning = true;
     lastMouseX = e.clientX; lastMouseY = e.clientY;
     img.style.cursor = "grabbing";
@@ -1102,7 +1228,7 @@ window.addEventListener("mousemove", (e) => {
 window.addEventListener("mouseup", (e) => {
   if (isPanning) {
     isPanning = false;
-    img.style.cursor = cropMode ? "crosshair" : (pickingDmin ? "crosshair" : "default");
+    img.style.cursor = (cropMode || pickingDmin || pickingWB) ? "crosshair" : "default";
   }
 });
 
@@ -1152,16 +1278,12 @@ $("btn-reset").addEventListener("click", () => {
 });
 
 $("btn-clear").addEventListener("click", () => {
+  resetImageState();
   img.style.display = "none";
   img.src = "";
-  previewWidth = 0; previewHeight = 0;
-  currentFilename = ""; currentDims = [0, 0];
-  pickingDmin = false; cropMode = false;
-  cropRectOrig = null;
-  $("btn-pick").classList.remove("btn-active");
-  $("btn-crop").classList.remove("btn-active");
   $("filepath").value = "";
   $("dmin-r").value = ""; $("dmin-g").value = ""; $("dmin-b").value = "";
+  $("black-level-info").textContent = "—";
   updateStatus();
   resetZoom();
   fetch("/api/clear", {method: "POST"}).catch(() => {});
@@ -1187,12 +1309,15 @@ document.addEventListener("keydown", (e) => {
     toggleBeforeAfter();
   } else if (e.key === "e" || e.key === "E") {
     $("btn-pick").click();
+  } else if (e.key === "w" || e.key === "W") {
+    $("btn-pick-wb").click();
   } else if (e.key === "c" || e.key === "C") {
     $("btn-crop").click();
   } else if (e.key === "d" || e.key === "D") {
     $("btn-redetect").click();
   } else if (e.key === "Escape") {
     if (pickingDmin) { $("btn-pick").click(); }
+    if (pickingWB) { $("btn-pick-wb").click(); }
     if (cropMode) { $("btn-crop").click(); }
   } else if (e.key === " ") {
     e.preventDefault();
@@ -1219,6 +1344,20 @@ document.addEventListener("keydown", (e) => {
       $("status").textContent = currentFilename ? `${currentFilename}  ${currentDims[0]}x${currentDims[1]} — Saved` : "";
       setTimeout(updateStatus, 2000);
     });
+  } else if (e.ctrlKey && e.shiftKey && e.key === "Z") {
+    e.preventDefault();
+    fetch("/api/redo", {method: "POST"}).then(r => r.json()).then(data => {
+      if (data.error) { flashStatus(data.error); return; }
+      updateUI(data.params);
+      img.src = "/api/preview/result?" + Date.now();
+    });
+  } else if (e.ctrlKey && e.key === "z") {
+    e.preventDefault();
+    fetch("/api/undo", {method: "POST"}).then(r => r.json()).then(data => {
+      if (data.error) { flashStatus(data.error); return; }
+      updateUI(data.params);
+      img.src = "/api/preview/result?" + Date.now();
+    });
   } else if (e.ctrlKey && e.key === "e") {
     e.preventDefault();
     $("btn-export").click();
@@ -1239,6 +1378,7 @@ function toggleShortcutOverlay() {
     <h2 style="margin-bottom:12px;font-size:1.1em;color:#999;text-transform:uppercase;letter-spacing:0.05em;">Keyboard Shortcuts</h2>
     <table style="width:100%;border-collapse:collapse;">
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">E</td><td>Eyedropper (pick Dmin)</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">W</td><td>WB neutral point eyedropper</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">C</td><td>Crop mode</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">D</td><td>Re-detect in crop</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">H</td><td>Toggle histogram</td></tr>
@@ -1251,6 +1391,8 @@ function toggleShortcutOverlay() {
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">1</td><td>Preset: Color (C-41)</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">2</td><td>Preset: B&W</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+S</td><td>Save params</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+Z</td><td>Undo</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+Shift+Z</td><td>Redo</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+E</td><td>Export</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Esc</td><td>Cancel mode / close</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">?</td><td>This help</td></tr>
