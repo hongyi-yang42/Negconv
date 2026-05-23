@@ -1088,11 +1088,11 @@ $("btn-before-after").addEventListener("click", toggleBeforeAfter);
 // Presets
 $("btn-preset-color").addEventListener("click", () => {
   fetch("/api/preset/color", {method: "POST"})
-  .then(r => r.json()).then(data => updateUI(data));
+  .then(r => r.json()).then(data => { updateUI(data); doInvert(); });
 });
 $("btn-preset-bw").addEventListener("click", () => {
   fetch("/api/preset/bw", {method: "POST"})
-  .then(r => r.json()).then(data => updateUI(data));
+  .then(r => r.json()).then(data => { updateUI(data); doInvert(); });
 });
 
 // ---- Profiles ----

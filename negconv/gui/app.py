@@ -748,6 +748,13 @@ def create_app() -> Flask:
         state.crop_rect = None
         state.directory_files = []
         state.current_index = 0
+        state.source_exif = None
+        state.orientation = 0
+        state.flip_h = False
+        state.flip_v = False
+        state.is_raw_input = False
+        state.black_level = [0, 0, 0, 0]
+        state.history.clear()
         return jsonify({"ok": True})
 
     @app.route("/api/crop", methods=["POST"])
