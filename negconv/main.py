@@ -45,6 +45,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # White balance
+    p.add_argument(
+        "--wb-mode", choices=["auto", "manual"], default="auto",
+        help="WB mode: auto (gray-world), manual (use defaults or --wb-high-*)",
+    )
     p.add_argument("--wb-high-r", type=float, default=None)
     p.add_argument("--wb-high-g", type=float, default=None)
     p.add_argument("--wb-high-b", type=float, default=None)
@@ -152,6 +156,12 @@ def _resolve_params(args: argparse.Namespace, img: np.ndarray) -> NegconvParams:
         params = NegconvParams.color_film()
     else:
         params = auto_detect(img, dmin_mode=args.dmin_mode)
+
+    # --wb-mode manual or explicit WB overrides disable auto_wb result
+    if args.wb_mode == "manual" or any(
+        v is not None for v in (args.wb_high_r, args.wb_high_g, args.wb_high_b)
+    ):
+        params.wb_high = np.ones(3, dtype=np.float32)
 
     _apply_cli_overrides(params, args)
     return params

@@ -166,6 +166,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <div style="margin-top:6px;">
       <div style="display:flex;gap:6px;margin-bottom:6px;">
         <button class="btn" id="btn-pick-wb" title="Pick neutral point for WB (W)">Pick WB</button>
+        <button class="btn" id="btn-auto-wb" title="Auto WB from image statistics">Auto WB</button>
+        <span id="wb-mode" style="font-size:0.75em;color:#666;align-self:center;display:none;"></span>
       </div>
       <div style="font-size:0.8em;color:#777;margin-bottom:4px;">Highlight</div>
       <label><span class="lbl" data-target="sl-wbh-r" title="Highlight WB — Red. 1.0 = neutral. Range: 0.5–2.0. Alt+click to reset.">R</span> <input type="range" id="sl-wbh-r" min="0.5" max="2.0" step="0.01" value="1.0" data-default="1.0"> <input type="number" id="num-wbh-r" min="0.5" max="2.0" step="0.01" value="1.00"></label>
@@ -589,7 +591,8 @@ function pushParams() {
   });
 }
 
-function onParamChange() {
+function onParamChange(srcId) {
+  if (srcId && srcId.startsWith("sl-wb")) setWbMode("manual");
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(pushParams, 300);
 }
@@ -602,13 +605,13 @@ sliderPairs.forEach(pair => {
   // Slider input → update number display → debounce push
   sl.addEventListener("input", () => {
     syncSlToNum(pair.sl, pair.num);
-    onParamChange();
+    onParamChange(pair.sl);
   });
 
   // Number input → update slider → debounce push
   num.addEventListener("input", () => {
     syncNumToSl(pair.num, pair.sl);
-    onParamChange();
+    onParamChange(pair.sl);
   });
 
   // Enter in number input → commit immediately
@@ -786,6 +789,7 @@ img.addEventListener("click", (e) => {
       setLoading(false);
       if (data.error) { alert(data.error); return; }
       updateUI(data.params);
+      setWbMode("manual");
       img.src = "/api/preview/result?" + Date.now();
       if (data.auto_saved) flashStatus("Auto-saved");
     })
@@ -824,6 +828,30 @@ $("btn-redetect").addEventListener("click", () => {
     updateStatus();
   })
   .catch(e => { setLoading(false); alert("Re-detect failed: " + e); });
+});
+
+// Auto WB
+let wbMode = "manual";
+function setWbMode(mode) {
+  wbMode = mode;
+  const el = $("wb-mode");
+  el.style.display = "inline";
+  el.textContent = mode === "auto" ? "Auto" : "Manual";
+  el.style.color = mode === "auto" ? "#4a9" : "#c63";
+}
+$("btn-auto-wb").addEventListener("click", () => {
+  setLoading(true);
+  fetch("/api/auto-wb", {method: "POST"})
+  .then(r => r.json())
+  .then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    updateUI(data.params);
+    setWbMode("auto");
+    img.src = "/api/preview/result?" + Date.now();
+    flashStatus("Auto WB applied");
+  })
+  .catch(e => { setLoading(false); alert("Auto WB failed: " + e); });
 });
 
 // ---- Crop tool ----

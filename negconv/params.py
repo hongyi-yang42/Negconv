@@ -167,6 +167,34 @@ def detect_dmax(img: np.ndarray, dmin: np.ndarray) -> float:
     return max(0.5, min(dmax, 4.0))
 
 
+def auto_wb(image: np.ndarray, dmin: np.ndarray, d_max: float) -> np.ndarray:
+    """Auto white balance via gray-world assumption in log-density space.
+
+    Computes per-channel median log density of exposed areas, then
+    equalizes using green-anchor formula (same math as WB picker).
+    Returns wb_high array clamped to [0.25, 4.0].
+    """
+    safe_dmin = np.maximum(dmin, np.float32(1e-6))
+    safe_img = np.maximum(image, np.float32(1e-10))
+    log_density = -np.log10(safe_img / safe_dmin)  # positive for exposed areas
+
+    # Mask: exclude near-base (< 0.05) and near-saturation (> 0.9 * d_max)
+    ld_max = max(d_max * 0.9, 0.1)
+    mask = (log_density > 0.05) & (log_density < ld_max)
+
+    median_ld = np.ones(3, dtype=np.float32)
+    for c in range(3):
+        ch = log_density[:, :, c][mask[:, :, c]]
+        if len(ch) < 100 or np.median(ch) < 0.01:
+            return np.ones(3, dtype=np.float32)  # underexposed — skip
+        median_ld[c] = float(np.median(ch))
+
+    wb_high = np.ones(3, dtype=np.float32)
+    wb_high[0] = median_ld[1] / max(median_ld[0], 1e-6)  # R
+    wb_high[2] = median_ld[1] / max(median_ld[2], 1e-6)  # B
+    return np.clip(wb_high, 0.25, 4.0).astype(np.float32)
+
+
 def detect_dmin_percentile(image: np.ndarray) -> np.ndarray:
     """Estimate Dmin from image statistics when no border is available.
 
@@ -225,6 +253,9 @@ def auto_detect(img: np.ndarray, fallback_preset: str = "color",
             params.d_max = dmax
         else:
             print(f"warning: auto Dmax out of range ({dmax:.2f}), using default", file=sys.stderr)
+
+        # Auto WB after Dmin/Dmax are set
+        params.wb_high = auto_wb(img, params.dmin, params.d_max)
 
     except Exception as e:
         print(f"warning: auto-detect failed ({e}), using defaults", file=sys.stderr)

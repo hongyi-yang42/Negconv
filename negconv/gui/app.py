@@ -1146,6 +1146,28 @@ def create_app() -> Flask:
             "params": _params_to_dict(state.params, state.crop_rect),
         })
 
+    @app.route("/api/auto-wb", methods=["POST"])
+    def api_auto_wb():
+        """Recalculate auto WB from current image/params."""
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+        from ..params import auto_wb as _auto_wb
+        state.params.wb_high = _auto_wb(
+            state.original_img, state.params.dmin, state.params.d_max,
+        )
+        try:
+            _run_pipeline(state)
+        except Exception as e:
+            return jsonify({"error": f"Inversion failed: {e}"}), 500
+        state.history.push(_snapshot_params(state))
+        _auto_save(state)
+        return jsonify({
+            "wb_high": state.params.wb_high.tolist(),
+            "wb_mode": "auto",
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+        })
+
     @app.route("/api/thumb/<int:index>")
     def api_thumb(index):
         if index < 0 or index >= len(state.directory_files):
