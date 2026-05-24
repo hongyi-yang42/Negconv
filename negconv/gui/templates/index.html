@@ -335,6 +335,16 @@ img.addEventListener("load", () => {
   // Only show crop overlay if actively in crop mode — not after commit
   if (cropMode) updateCropOverlay();
   else { /* hide overlay */ $("mask-top").style.display="none"; $("mask-bottom").style.display="none"; $("mask-left").style.display="none"; $("mask-right").style.display="none"; $("crop-border").style.display="none"; $("crop-info").style.display="none"; }
+  // Sync before/after state after successful load
+  if (img.src.includes("/preview/orig")) {
+    currentSrcIsOriginal = true;
+    $("btn-before-after").classList.add("btn-active");
+    flashStatus("Original (negative)");
+  } else if (img.src.includes("/preview/result")) {
+    currentSrcIsOriginal = false;
+    $("btn-before-after").classList.remove("btn-active");
+    flashStatus("Result");
+  }
 });
 
 // Flash a status message for 2 seconds
@@ -1181,15 +1191,10 @@ function toggleBeforeAfter() {
   if (currentSrcIsOriginal) {
     if (lastResultSrc) img.src = lastResultSrc;
     else img.src = "/api/preview/result?" + Date.now();
-    currentSrcIsOriginal = false;
-    $("btn-before-after").classList.remove("btn-active");
-    flashStatus("Result");
+    // State updated on load — avoids desync if image fails
   } else {
     lastResultSrc = img.src;
     img.src = "/api/preview/orig?" + Date.now();
-    currentSrcIsOriginal = true;
-    $("btn-before-after").classList.add("btn-active");
-    flashStatus("Original (negative)");
   }
 }
 
@@ -1392,6 +1397,13 @@ window.addEventListener("mousemove", (e) => {
   applyTransform();
 });
 window.addEventListener("mouseup", (e) => {
+  if (isPanning) {
+    isPanning = false;
+    img.style.cursor = (cropMode || pickingDmin || pickingWB) ? "crosshair" : "default";
+  }
+});
+// Reset pan on window blur (Alt-Tab, etc.) — otherwise cursor stays "grabbing"
+window.addEventListener("blur", () => {
   if (isPanning) {
     isPanning = false;
     img.style.cursor = (cropMode || pickingDmin || pickingWB) ? "crosshair" : "default";
@@ -1698,6 +1710,8 @@ function hideCtxMenu() {
 document.addEventListener("click", (e) => {
   if (!$("ctx-menu").contains(e.target)) hideCtxMenu();
 });
+// Hide context menu on tab/window switch
+window.addEventListener("blur", hideCtxMenu);
 
 $("ctx-apply").addEventListener("click", () => {
   if (ctxTargetIndex < 0) return;
