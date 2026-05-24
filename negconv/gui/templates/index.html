@@ -278,7 +278,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     </label>
     <div style="font-size:0.75em;color:#666;margin-top:2px;">Lower = faster over remote connection</div>
 
-    <div style="margin-top:20px;display:flex;gap:8px;">
+    <div id="version-info" style="margin-top:16px;padding-top:8px;border-top:1px solid #333;font-size:0.75em;color:#555;text-align:center;">loading...</div>
+
+    <div style="margin-top:12px;display:flex;gap:8px;">
       <button class="btn btn-primary" id="settings-save" style="flex:1;">Save</button>
       <button class="btn" id="settings-cancel" style="flex:1;">Cancel</button>
     </div>
@@ -1582,6 +1584,9 @@ function openSettings() {
   settingsVisible = true;
   $("settings-modal").style.display = "flex";
   fetch("/api/settings").then(r => r.json()).then(s => loadSettingsToUI(s));
+  fetch("/api/version").then(r => r.json()).then(v => {
+    $("version-info").textContent = "negconv v" + v.version + "  (" + v.commit + ")";
+  }).catch(() => { $("version-info").textContent = ""; });
 }
 function closeSettings() {
   settingsVisible = false;

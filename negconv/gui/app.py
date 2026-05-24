@@ -14,6 +14,8 @@ from pathlib import Path
 import numpy as np
 from flask import Flask, jsonify, render_template, request, send_file
 
+import negconv
+
 from ..io import apply_orientation, extract_exif, is_raw, read_image, write_image, write_jpeg, write_heic, RAW_EXTENSIONS
 from ..params import NegconvParams, auto_detect, save_params, load_params, PARAM_CATEGORIES, carry_fields_for_categories
 from ..pipeline import invert
@@ -789,6 +791,20 @@ def create_app() -> Flask:
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
         })
+
+    @app.route("/api/version")
+    def api_version():
+        import subprocess
+        commit = "unknown"
+        try:
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=str(Path(__file__).resolve().parent.parent.parent),
+                stderr=subprocess.DEVNULL,
+            ).decode().strip()
+        except Exception:
+            pass
+        return jsonify({"version": negconv.__version__, "commit": commit})
 
     @app.route("/api/clear", methods=["POST"])
     def api_clear():
