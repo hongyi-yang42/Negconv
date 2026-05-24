@@ -7,7 +7,38 @@ import numpy as np
 import tifffile
 from PIL import Image
 
-RAW_EXTENSIONS = {".cr2", ".cr3", ".arw", ".raf", ".nef", ".dng", ".orf", ".rw2", ".pef", ".srw", ".sr2", ".k25", ".kc"}
+RAW_EXTENSIONS = {
+    # Canon
+    ".cr2", ".cr3", ".crw",
+    # Sony
+    ".arw", ".sr2", ".srf",
+    # Nikon
+    ".nef", ".nrw",
+    # Fuji
+    ".raf",
+    # Adobe
+    ".dng",
+    # Olympus/OM
+    ".orf", ".ori",
+    # Panasonic/Lumix
+    ".raw", ".rw2",
+    # Pentax
+    ".pef", ".ptx",
+    # Samsung
+    ".srw",
+    # Kodak
+    ".dcr", ".k25", ".kc",
+    # Hasselblad
+    ".3fr", ".fff",
+    # Minolta
+    ".mrw",
+    # Epson
+    ".erf",
+    # Mamiya
+    ".mef",
+    # Sigma
+    ".x3f",
+}
 
 
 def _read_icc_gamma(icc: bytes) -> float | None:

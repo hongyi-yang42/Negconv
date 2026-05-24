@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np
 from flask import Flask, jsonify, render_template, request, send_file
 
-from ..io import apply_orientation, extract_exif, is_raw, read_image, write_image, write_jpeg, write_heic
+from ..io import apply_orientation, extract_exif, is_raw, read_image, write_image, write_jpeg, write_heic, RAW_EXTENSIONS
 from ..params import NegconvParams, auto_detect, save_params, load_params, PARAM_CATEGORIES, carry_fields_for_categories
 from ..pipeline import invert
 from ..color import srgb_to_rec2020, rec2020_to_srgb, recover_highlights
@@ -25,7 +25,7 @@ from .viewer import make_preview
 PREVIEW_MAX_WIDTH = 1200
 RECENT_FILE = Path.home() / ".negconv" / "recent.json"
 SETTINGS_FILE = Path.home() / ".negconv" / "settings.json"
-SUPPORTED_EXTENSIONS = {'.arw', '.cr2', '.cr3', '.nef', '.raf', '.dng', '.tif', '.tiff'}
+SUPPORTED_EXTENSIONS = RAW_EXTENSIONS | {'.tif', '.tiff'}
 
 THUMB_DIR = Path.home() / ".negconv" / "thumbs"
 THUMB_WIDTH = 120

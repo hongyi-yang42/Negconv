@@ -12,11 +12,9 @@ from .io import is_raw, read_image, write_image, write_jpeg, write_heic
 from .params import NegconvParams, auto_detect, load_params, save_params
 from .pipeline import invert
 from .profiles import save_profile, load_profile, list_profiles as list_profiles_fn
+from .io import RAW_EXTENSIONS
 
-SUPPORTED_EXTENSIONS = {
-    ".tif", ".tiff", ".cr2", ".cr3", ".arw", ".raf", ".nef",
-    ".dng", ".orf", ".rw2", ".pef", ".srw", ".sr2",
-}
+SUPPORTED_EXTENSIONS = RAW_EXTENSIONS | {".tif", ".tiff"}
 
 
 def _build_parser() -> argparse.ArgumentParser:
