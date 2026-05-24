@@ -217,24 +217,32 @@ def apply_orientation(image: np.ndarray, orientation: int,
     return np.ascontiguousarray(image)
 
 
-def write_image(path: str | Path, img: np.ndarray, dtype: str = "float32") -> None:
+def write_image(path: str | Path, img: np.ndarray, dtype: str = "float32",
+                apply_srgb_gamma: bool = False) -> None:
     """Write a float32 image to TIFF.
 
     Args:
         path: Output file path.
         img: float32 array shaped (H, W, 3), range ~[0, 1+].
         dtype: 'float32' for 32-bit float output, 'uint16' for 16-bit integer.
+        apply_srgb_gamma: If True, apply sRGB gamma curve before quantizing
+                          to uint16. Use when the input is linear and the output
+                          should look correct in sRGB viewers.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     if dtype == "uint16":
-        out = np.clip(img, 0.0, 1.0)
-        out = (out * 65535.0).astype(np.uint16)
+        clipped = np.clip(img, 0.0, 1.0)
+        if apply_srgb_gamma:
+            clipped = _SRGB_LUT[(clipped * 65535).astype(np.int32).clip(0, 65535)]
+        out = (clipped * 65535.0 + 0.5).astype(np.uint16)
+        tifffile.imwrite(str(path), out, photometric="rgb",
+                         compression="deflate", iccprofile=_get_srgb_icc())
     else:
         out = img.astype(np.float32)
-
-    tifffile.imwrite(str(path), out, photometric="rgb")
+        tifffile.imwrite(str(path), out, photometric="rgb",
+                         compression="deflate")
 
 
 def _srgb_lut() -> np.ndarray:

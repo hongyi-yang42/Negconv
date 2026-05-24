@@ -314,16 +314,23 @@ def _generate_thumb(file_path: str) -> None:
     tp.parent.mkdir(parents=True, exist_ok=True)
     ext = Path(file_path).suffix.lower()
     try:
-        if ext in {'.arw', '.cr2', '.cr3', '.nef', '.raf', '.dng'}:
+        if ext in RAW_EXTENSIONS:
             import rawpy
-            raw = rawpy.imread(file_path)
-            thumb = raw.extract_thumb()
-            if thumb.format == rawpy.ThumbFormat.JPEG:
+            try:
+                raw = rawpy.imread(file_path)
+                thumb = raw.extract_thumb()
                 from PIL import Image as PILImage
-                img = PILImage.open(io.BytesIO(thumb.data))
-            else:
+                if thumb.format == rawpy.ThumbFormat.JPEG:
+                    img = PILImage.open(io.BytesIO(thumb.data))
+                else:
+                    img = PILImage.fromarray(thumb.data)
+            except (rawpy.LibRawNoThumbnailError, rawpy.LibRawUnsupportedThumbnailError,
+                    AttributeError, Exception):
+                # Fallback: render a small preview from raw data
+                with rawpy.imread(file_path) as raw:
+                    rgb = raw.postprocess(half_size=True, output_bps=8)
                 from PIL import Image as PILImage
-                img = PILImage.fromarray(thumb.data)
+                img = PILImage.fromarray(rgb)
         else:
             from PIL import Image as PILImage
             img = PILImage.open(file_path)
@@ -1320,7 +1327,7 @@ def create_app() -> Flask:
         tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
         try:
             if fmt in ("tiff32f", "tiff16"):
-                write_image(tmp.name, result, dtype=dtype)
+                write_image(tmp.name, result, dtype=dtype, apply_srgb_gamma=True)
             elif fmt == "jpeg":
                 write_jpeg(tmp.name, result, quality=quality)
             elif fmt == "heic":
