@@ -399,7 +399,7 @@ async function loadFilmstrip() {
     const active = f.index === data.current_index ? ' active' : '';
     const nameColor = f.has_sidecar ? '#4a9' : '#666';
     return `<div class="fs-item${active}" data-index="${f.index}" onclick="navigateTo(${f.index})" oncontextmenu="showCtxMenu(event,${f.index})">
-      <img src="/api/thumb/${f.index}" onerror="retryThumb(this,${f.index},0)">
+      <img loading="lazy" src="/api/thumb/${f.index}" onerror="retryThumb(this,${f.index},0)">
       <div class="fs-name" style="color:${nameColor}">${f.name}</div>
     </div>`;
   }).join("");
@@ -560,7 +560,8 @@ let state_currentIndex = 0;
 function syncSlToNum(slId, numId) {
   const sl = $(slId);
   const num = $(numId);
-  num.value = parseFloat(sl.value).toFixed(sl.step.includes(".0") ? 1 : 2);
+  const decimals = sl.step.includes(".") ? sl.step.split(".")[1].length : 0;
+  num.value = parseFloat(sl.value).toFixed(Math.max(decimals, 1));
 }
 
 // Sync number input → slider
@@ -831,6 +832,10 @@ img.addEventListener("click", (e) => {
       setWbMode("manual");
       img.src = "/api/preview/result?" + Date.now();
       if (data.auto_saved) flashStatus("Auto-saved");
+      // Auto-exit eyedropper after one pick
+      pickingWB = false;
+      $("btn-pick-wb").classList.remove("btn-active");
+      img.style.cursor = pickingDmin ? "crosshair" : "default";
     })
     .catch(e => { setLoading(false); alert("WB pick failed: " + e); });
     return;
@@ -847,8 +852,13 @@ img.addEventListener("click", (e) => {
     if (data.error) { alert(data.error); return; }
     updateUI(data.params);
     img.src = "/api/preview/result?" + Date.now();
+    currentSrcIsOriginal = false;
     updateStatus();
     if (data.auto_saved) flashStatus("Auto-saved");
+    // Auto-exit eyedropper after one pick
+    pickingDmin = false;
+    $("btn-pick").classList.remove("btn-active");
+    img.style.cursor = pickingWB ? "crosshair" : "default";
   })
   .catch(e => { setLoading(false); alert("Pick failed: " + e); });
 });
@@ -951,7 +961,12 @@ function updateCropOverlay() {
 $("btn-crop").addEventListener("click", () => {
   cropMode = !cropMode;
   $("btn-crop").classList.toggle("btn-active", cropMode);
-  if (cropMode) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); pickingWB = false; $("btn-pick-wb").classList.remove("btn-active"); }
+  if (cropMode) {
+    pickingDmin = false; $("btn-pick").classList.remove("btn-active");
+    pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
+    // Switch to original preview for correct coordinate mapping
+    img.src = "/api/preview/orig?" + Date.now();
+  }
   img.style.cursor = cropMode ? "crosshair" : ((pickingDmin || pickingWB) ? "crosshair" : "default");
 });
 
@@ -1059,6 +1074,13 @@ window.addEventListener("mouseup", (e) => {
     drawEl.style.display = "none";
     drawEl.style.width = "0";
     drawEl.style.height = "0";
+    // Immediately hide crop overlay — don't wait for img.load
+    $("mask-top").style.display = "none";
+    $("mask-bottom").style.display = "none";
+    $("mask-left").style.display = "none";
+    $("mask-right").style.display = "none";
+    $("crop-border").style.display = "none";
+    $("crop-info").style.display = "none";
     img.src = "/api/preview/result?" + Date.now();
     updateUI(data.params);
     // Don't show crop overlay after commit — preview already reflects the crop
