@@ -29,7 +29,9 @@ SUPPORTED_EXTENSIONS = RAW_EXTENSIONS | {'.tif', '.tiff'}
 
 THUMB_DIR = Path.home() / ".negconv" / "thumbs"
 THUMB_WIDTH = 120
+THUMB_WINDOW = 10  # generate ±10 around current index
 _thumb_executor = ThreadPoolExecutor(max_workers=2)
+_thumb_queued: set[int] = set()  # indices already queued for generation
 
 DEFAULT_SETTINGS = {
     "carry_categories": {"tone": True, "wb": True, "film_base": False, "geometry": True},
@@ -37,6 +39,7 @@ DEFAULT_SETTINGS = {
     "preview_quality": 90,
     "preview_max_width": 1200,
     "highlight_recovery": False,
+    "include_subdirs": False,
 }
 
 
@@ -273,11 +276,25 @@ def _add_recent(file_path: str) -> None:
 
 def _scan_directory(file_path: str) -> list[str]:
     """Scan parent directory for supported image files, sorted alphabetically."""
-    parent = Path(file_path).parent
+    return _scan_directory_simple(Path(file_path).parent)
+
+
+def _scan_directory_simple(dir_path: str | Path, include_subdirs: bool = False) -> list[str]:
+    """Scan a directory for supported image files, sorted alphabetically."""
+    parent = Path(dir_path)
+    if not parent.is_dir():
+        return []
     files = []
-    for f in sorted(parent.iterdir()):
-        if f.suffix.lower() in SUPPORTED_EXTENSIONS and f.is_file():
-            files.append(str(f))
+    if include_subdirs:
+        for root, _dirs, fnames in os.walk(parent):
+            for fname in sorted(fnames):
+                if Path(fname).suffix.lower() in SUPPORTED_EXTENSIONS:
+                    files.append(str(Path(root) / fname))
+        files.sort()
+    else:
+        for f in sorted(parent.iterdir()):
+            if f.suffix.lower() in SUPPORTED_EXTENSIONS and f.is_file():
+                files.append(str(f))
     return files
 
 
@@ -317,8 +334,21 @@ def _generate_thumb(file_path: str) -> None:
 
 
 def _start_thumbnails(files: list[str]) -> None:
-    for f in files:
-        _thumb_executor.submit(_generate_thumb, f)
+    """DEPRECATED — use _ensure_thumb_window() instead."""
+    pass
+
+
+def _ensure_thumb_window(center: int, state: GuiState) -> None:
+    """Generate thumbnails for indices [center-WINDOW, center+WINDOW]."""
+    files = state.directory_files
+    lo = max(0, center - THUMB_WINDOW)
+    hi = min(len(files), center + THUMB_WINDOW + 1)
+    for i in range(lo, hi):
+        if i not in _thumb_queued:
+            tp = _thumb_path(files[i])
+            if not tp.exists():
+                _thumb_queued.add(i)
+                _thumb_executor.submit(_generate_thumb, files[i])
 
 
 def _load_file(state: GuiState, path: str) -> bool:
@@ -498,7 +528,8 @@ def create_app() -> Flask:
             state.current_index = 0
 
         _add_recent(path)
-        _start_thumbnails(state.directory_files)
+        _thumb_queued.clear()
+        _ensure_thumb_window(state.current_index, state)
 
         h, w = state.original_img.shape[:2]
         result = {
@@ -974,6 +1005,7 @@ def create_app() -> Flask:
         except Exception as e:
             return jsonify({"error": f"Failed to read: {e}"}), 400
         state.current_index = target
+        _ensure_thumb_window(target, state)
 
         # 4. If no sidecar, apply carry using enabled categories
         if not sidecar_loaded:
@@ -1042,6 +1074,7 @@ def create_app() -> Flask:
         except Exception as e:
             return jsonify({"error": f"Failed to read: {e}"}), 400
         state.current_index = target
+        _ensure_thumb_window(target, state)
 
         if not sidecar_loaded:
             _apply_carry(state, snapshot, categories)
@@ -1172,10 +1205,50 @@ def create_app() -> Flask:
     def api_thumb(index):
         if index < 0 or index >= len(state.directory_files):
             return "", 404
+        _ensure_thumb_window(index, state)
         tp = _thumb_path(state.directory_files[index])
         if tp.exists():
             return send_file(str(tp), mimetype="image/jpeg")
         return "", 404
+
+    @app.route("/api/load-directory", methods=["POST"])
+    def api_load_directory():
+        """Load the first supported file from a directory."""
+        data = request.get_json(force=True)
+        dir_path = data.get("path", "").strip()
+        if not dir_path or not os.path.isdir(dir_path):
+            return jsonify({"error": f"Directory not found: {dir_path}"}), 400
+
+        files = _scan_directory_simple(dir_path, include_subdirs=state.settings.get("include_subdirs", False))
+        if not files:
+            return jsonify({"error": "No supported image files found"}), 400
+
+        try:
+            sidecar_loaded = _load_file(state, files[0])
+        except Exception as e:
+            return jsonify({"error": f"Failed to read: {e}"}), 400
+
+        state.directory_files = files
+        state.current_index = 0
+        _thumb_queued.clear()
+        _ensure_thumb_window(0, state)
+        _add_recent(files[0])
+
+        h, w = state.original_img.shape[:2]
+        return jsonify({
+            "preview": "/api/preview/orig",
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "crop_rect": state.crop_rect,
+            "filename": Path(files[0]).name,
+            "dims": [h, w],
+            "preview_dims": list(state.preview_dims),
+            "sidecar_loaded": sidecar_loaded,
+            "orientation": state.orientation,
+            "flip_h": state.flip_h,
+            "flip_v": state.flip_v,
+            "current_index": 0,
+            "total_files": len(files),
+        })
 
     @app.route("/api/export", methods=["POST"])
     def api_export():

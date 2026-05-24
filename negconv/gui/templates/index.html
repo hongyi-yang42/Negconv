@@ -93,11 +93,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <div class="section">
     <h2>File</h2>
     <div id="file-row">
-      <input id="filepath" type="text" placeholder="/path/to/scan.ARW" spellcheck="false" list="recent-files">
+      <input id="filepath" type="text" placeholder="/path/to/scan.ARW or /folder/" spellcheck="false" list="recent-files">
       <datalist id="recent-files"></datalist>
       <button class="btn btn-primary" id="btn-load">Load</button>
+      <button class="btn" id="btn-open-dir" title="Open folder (Ctrl+O)">Open Folder</button>
       <button class="btn" id="btn-reset" title="Reset this photo to defaults">Reset</button>
-      <button class="btn" id="btn-clear">Clear</button>
     </div>
     <div id="status">No image loaded</div>
   </div>
@@ -255,6 +255,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85em;">
       <input type="checkbox" id="set-auto-redetect"> Auto re-detect after crop
     </label>
+    <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85em;">
+      <input type="checkbox" id="set-include-subdirs"> Include subfolders when opening folder
+    </label>
 
     <h3 style="margin:16px 0 8px;color:#2a6;font-size:0.85em;text-transform:uppercase;">Image Quality</h3>
     <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:0.85em;">
@@ -366,6 +369,16 @@ function loadRecentFiles() {
 }
 loadRecentFiles();
 
+// ---- Thumb retry ----
+const THUMB_DELAYS = [500, 1000, 2000, 4000];
+function retryThumb(img, index, attempt) {
+  if (attempt >= THUMB_DELAYS.length) { img.style.opacity = '0.3'; return; }
+  setTimeout(() => {
+    img.src = "/api/thumb/" + index + "?" + Date.now();
+    img.onerror = () => retryThumb(img, index, attempt + 1);
+  }, THUMB_DELAYS[attempt]);
+}
+
 // ---- Filmstrip ----
 async function loadFilmstrip() {
   const res = await fetch("/api/directory");
@@ -384,7 +397,7 @@ async function loadFilmstrip() {
     const active = f.index === data.current_index ? ' active' : '';
     const nameColor = f.has_sidecar ? '#4a9' : '#666';
     return `<div class="fs-item${active}" data-index="${f.index}" onclick="navigateTo(${f.index})" oncontextmenu="showCtxMenu(event,${f.index})">
-      <img src="/api/thumb/${f.index}" onerror="this.style.opacity='0.3'">
+      <img src="/api/thumb/${f.index}" onerror="retryThumb(this,${f.index},0)">
       <div class="fs-name" style="color:${nameColor}">${f.name}</div>
     </div>`;
   }).join("");
@@ -711,10 +724,13 @@ $("btn-load").addEventListener("click", () => {
   const path = $("filepath").value.trim();
   if (!path) return;
   setLoading(true);
-  fetch("/api/load", {
+  // If path is a directory, use load-directory; otherwise load file
+  const endpoint = path.endsWith("/") ? "/api/load-directory" : "/api/load";
+  const body = path.endsWith("/") ? {path: path.replace(/\/+$/, "")} : {path};
+  fetch(endpoint, {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({path}),
+    body: JSON.stringify(body),
   })
   .then(r => r.json())
   .then(data => {
@@ -726,6 +742,27 @@ $("btn-load").addEventListener("click", () => {
     loadFilmstrip();
   })
   .catch(e => { setLoading(false); alert("Load failed: " + e); });
+});
+
+$("btn-open-dir").addEventListener("click", () => {
+  const path = $("filepath").value.trim();
+  if (!path) { alert("Enter a folder path first"); return; }
+  setLoading(true);
+  fetch("/api/load-directory", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({path}),
+  })
+  .then(r => r.json())
+  .then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    applyLoadResponse(data);
+    loadRecentFiles();
+    loadFilmstrip();
+    flashStatus("Opened folder: " + data.total_files + " files");
+  })
+  .catch(e => { setLoading(false); alert("Open folder failed: " + e); });
 });
 
 // Invert
@@ -1466,7 +1503,9 @@ document.addEventListener("keydown", (e) => {
   } else if (e.ctrlKey && e.key === "e") {
     e.preventDefault();
     $("btn-export").click();
-  }
+  } else if (e.ctrlKey && e.key === "o") {
+    e.preventDefault();
+    $("btn-open-dir").click();
 });
 
 // ---- Shortcut help overlay ----
@@ -1499,6 +1538,7 @@ function toggleShortcutOverlay() {
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+Z</td><td>Undo</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+Shift+Z</td><td>Redo</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+E</td><td>Export</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Ctrl+O</td><td>Open folder</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Esc</td><td>Cancel mode / close</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">?</td><td>This help</td></tr>
     </table>
@@ -1534,6 +1574,7 @@ function loadSettingsToUI(settings) {
   $("set-carry-film-base").checked = !!cats.film_base;
   $("set-carry-geometry").checked = !!cats.geometry;
   $("set-auto-redetect").checked = settings.auto_redetect_on_crop;
+  $("set-include-subdirs").checked = !!settings.include_subdirs;
   $("set-preview-size").value = String(settings.preview_max_width);
   $("set-preview-quality").value = String(settings.preview_quality);
 }
@@ -1555,6 +1596,7 @@ function saveSettings() {
       geometry: $("set-carry-geometry").checked,
     },
     auto_redetect_on_crop: $("set-auto-redetect").checked,
+    include_subdirs: $("set-include-subdirs").checked,
     preview_max_width: parseInt($("set-preview-size").value),
     preview_quality: parseInt($("set-preview-quality").value),
   };
