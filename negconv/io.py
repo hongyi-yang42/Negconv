@@ -66,21 +66,36 @@ def _read_icc_gamma(icc: bytes) -> float | None:
 def read_raw(path: str | Path) -> np.ndarray:
     """Read a RAW file and return linear float32 array shaped (H, W, 3).
 
-    Uses rawpy with unity WB (user_wb=[1,1,1,1]) and Rec.2020 color space.
-    rawpy applies the camera-specific color matrix internally, producing
-    linear Rec.2020 output. Stage 1 (divide by Dmin) handles channel
-    normalization.
+    Uses daylight WB multipliers to spread weak channels across more of the
+    [0,1] range, improving quantization in density space. This gives the
+    color matrix correctly balanced input, producing more accurate Rec.2020
+    output. Fallback: daylight_whitebalance → camera_whitebalance → unity.
     """
     import rawpy
 
     with rawpy.imread(str(path)) as raw:
+        wb = [1, 1, 1, 1]
+        try:
+            dwb = list(raw.daylight_whitebalance)
+            if dwb and any(v > 0.01 for v in dwb[:3]):
+                wb = dwb
+        except AttributeError:
+            pass
+        if wb == [1, 1, 1, 1]:
+            try:
+                cwb = list(raw.camera_whitebalance)
+                if cwb and any(v > 0.01 for v in cwb[:3]):
+                    wb = cwb
+            except AttributeError:
+                pass
+
         rgb = raw.postprocess(
             output_bps=16,
             gamma=(1, 1),
             no_auto_bright=True,
             use_camera_wb=False,
             use_auto_wb=False,
-            user_wb=[1, 1, 1, 1],
+            user_wb=wb,
             output_color=rawpy.ColorSpace.Rec2020,
         )
     return rgb.astype(np.float32) / 65535.0

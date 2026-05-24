@@ -11,9 +11,13 @@ These are in `.gitignore` and must NEVER be committed to git.
 Do not push large binary files — use `.gitignore` patterns.
 
 ## RAW config (CORRECT, don't change)
-`read_raw()` uses: `user_wb=[1,1,1,1]`, `output_color=rawpy.ColorSpace.raw`,
-`no_auto_bright=True`, `gamma=(1,1)`, `output_bps=16`.
-sRGB matrix WITHOUT WB was tested and FAILED (crushes R channel to ~0).
+`read_raw()` uses daylight WB multipliers (`raw.daylight_whitebalance`).
+This gives the color matrix correctly balanced input, improving quantization
+in weak channels (e.g. Olympus ORF blue) and producing more accurate Rec.2020.
+Sensor-saturated files clip with both daylight and unity WB — not a regression.
+Fallback: daylight_whitebalance → camera_whitebalance → unity [1,1,1,1].
+`output_color=rawpy.ColorSpace.Rec2020`, `no_auto_bright=True`, `gamma=(1,1)`,
+`output_bps=16`. sRGB matrix WITHOUT WB was tested and FAILED.
 
 ## Known limitation
 `detect_dmin()` auto-detect only works for flatbed scans where film base is at
