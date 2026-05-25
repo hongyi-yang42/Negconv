@@ -46,7 +46,7 @@ class TestJSONSidecar:
                 data = json.load(f)
             assert set(data.keys()) == {
                 "dmin", "d_max", "wb_high", "wb_low",
-                "offset", "exposure", "black", "gamma", "soft_clip",
+                "offset", "exposure", "black", "gamma", "soft_clip", "tint",
             }
             assert len(data["dmin"]) == 3
             assert isinstance(data["d_max"], float)

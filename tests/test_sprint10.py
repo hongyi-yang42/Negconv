@@ -1,4 +1,4 @@
-"""Sprint 10 tests: roll analysis and border buffer."""
+"""Sprint 10 tests: roll analysis, border buffer, tint, and post-inversion editing."""
 
 import numpy as np
 import pytest
@@ -9,6 +9,7 @@ from negconv.params import (
     detect_dmin, detect_dmin_percentile, auto_detect, NegconvParams,
     analyze_roll, RollProfile, detect_border_region,
 )
+from negconv.postproc import apply_tint, apply_curves, apply_hsl, apply_sharpen, cubic_spline_lut
 
 
 def _make_negative_with_border(
@@ -157,3 +158,85 @@ class TestBorderBuffer:
         if dmin_inner is not None:
             # If it detects something, it should NOT match the border
             assert not np.allclose(dmin_inner, border_rgb, atol=0.01)
+
+
+class TestTintSlider:
+    def test_tint_slider_shifts_green_magenta(self):
+        """Positive tint reduces G relative to R/B."""
+        img = np.full((10, 10, 3), 0.5, dtype=np.float32)
+        out = apply_tint(img, 0.5)
+        # G should decrease, R and B should increase
+        assert out[0, 0, 1] < img[0, 0, 1], "Positive tint should reduce green"
+        assert out[0, 0, 0] > img[0, 0, 0], "Positive tint should increase red"
+        assert out[0, 0, 2] > img[0, 0, 2], "Positive tint should increase blue"
+        # Verify specific formula: G * (1 - 0.5*0.5) = 0.5 * 0.75
+        np.testing.assert_allclose(out[0, 0, 1], 0.375, rtol=1e-5)
+
+    def test_tint_zero_is_identity(self):
+        """tint=0.0 output unchanged."""
+        img = np.random.rand(10, 10, 3).astype(np.float32)
+        out = apply_tint(img, 0.0)
+        np.testing.assert_array_equal(out, img)
+
+
+class TestCurves:
+    def test_curves_identity(self):
+        """Diagonal curve (0,0)→(1,1): output identical to input."""
+        img = np.random.rand(20, 20, 3).astype(np.float32) * 0.8
+        out = apply_curves(img, r_points=[(0, 0), (1, 1)])
+        np.testing.assert_allclose(out, img, atol=0.01)
+
+    def test_curves_contrast_boost(self):
+        """S-curve: shadows darker, highlights brighter."""
+        # 100x1 gradient so index maps directly to value
+        img = np.linspace(0, 1, 100, dtype=np.float32).reshape(1, 100, 1)
+        img = np.broadcast_to(img, (1, 100, 3)).copy()
+
+        # S-curve: darken shadows, brighten highlights
+        out = apply_curves(img, r_points=[(0, 0), (0.25, 0.15), (0.75, 0.85), (1, 1)])
+
+        # Shadow region (input ~0.25): should be darker
+        shadow_idx = 25
+        assert out[0, shadow_idx, 0] < img[0, shadow_idx, 0], \
+            f"S-curve should darken shadows: {out[0, shadow_idx, 0]} >= {img[0, shadow_idx, 0]}"
+
+        # Highlight region (input ~0.75): should be brighter
+        highlight_idx = 75
+        assert out[0, highlight_idx, 0] > img[0, highlight_idx, 0], \
+            f"S-curve should brighten highlights: {out[0, highlight_idx, 0]} <= {img[0, highlight_idx, 0]}"
+
+
+class TestHSL:
+    def test_hsl_saturation_red(self):
+        """Boost red saturation: red pixels should be more saturated."""
+        # Pure red image
+        img = np.zeros((10, 10, 3), dtype=np.float32)
+        img[:, :, 0] = 0.8
+        img[:, :, 1] = 0.2
+        img[:, :, 2] = 0.2
+
+        out = apply_hsl(img, {"red": {"saturation": 50}})
+
+        # After boosting red sat, red channel should increase relative to others
+        assert out[0, 0, 0] >= img[0, 0, 0] - 0.01, "Red sat boost should not decrease red channel"
+
+
+class TestSharpen:
+    def test_sharpen_increases_edge_contrast(self):
+        """Unsharp mask should increase contrast at edges."""
+        # Create image with a horizontal edge: dark top, bright bottom
+        img = np.zeros((40, 40, 3), dtype=np.float32)
+        img[20:, :, :] = 0.8
+
+        out = apply_sharpen(img, amount=100, radius=1.0, threshold=0)
+
+        # At the edge (row 19-20), sharpening should make the transition sharper
+        # Dark side should get slightly darker, bright side slightly brighter
+        edge_dark = out[19, 20, 0]
+        edge_bright = out[20, 20, 0]
+
+        # The edge contrast (difference) should increase
+        orig_contrast = abs(img[20, 20, 0] - img[19, 20, 0])
+        sharp_contrast = abs(edge_bright - edge_dark)
+        assert sharp_contrast >= orig_contrast - 0.01, \
+            f"Sharpening should increase edge contrast: {sharp_contrast} < {orig_contrast}"

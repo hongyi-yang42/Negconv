@@ -180,6 +180,77 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     </div>
   </details>
 
+  <!-- Edit (post-inversion) -->
+  <details class="section" id="edit-section">
+    <summary><h2 style="display:inline;cursor:pointer;">Edit</h2></summary>
+    <div style="margin-top:6px;">
+      <!-- Tint -->
+      <label><span class="lbl" data-target="sl-tint" title="Green-magenta tint. Negative = greener, Positive = magenta. Range: -1.0 to +1.0. Alt+click to reset.">Tint (G↔M)</span> <input type="range" id="sl-tint" min="-1.0" max="1.0" step="0.01" value="0.0" data-default="0.0"> <input type="number" id="num-tint" min="-1.0" max="1.0" step="0.01" value="0.00"></label>
+
+      <!-- Curves -->
+      <div style="font-size:0.8em;color:#777;margin:8px 0 4px;">RGB Curves</div>
+      <div style="display:flex;gap:4px;margin-bottom:4px;">
+        <button class="btn" style="flex:1;font-size:0.8em;" id="btn-curve-composite" data-channel="composite">Composite</button>
+        <button class="btn" style="flex:1;font-size:0.8em;" id="btn-curve-r" data-channel="r">R</button>
+        <button class="btn" style="flex:1;font-size:0.8em;" id="btn-curve-g" data-channel="g">G</button>
+        <button class="btn" style="flex:1;font-size:0.8em;" id="btn-curve-b" data-channel="b">B</button>
+      </div>
+      <canvas id="curve-canvas" width="200" height="200" style="background:#111;border:1px solid #444;cursor:crosshair;width:200px;height:200px;"></canvas>
+      <div style="display:flex;gap:4px;margin-top:4px;">
+        <button class="btn" style="font-size:0.8em;" id="btn-curve-reset">Reset Curve</button>
+        <button class="btn" style="font-size:0.8em;" id="btn-curve-linear">Linear</button>
+      </div>
+
+      <!-- HSL -->
+      <details style="margin-top:8px;">
+        <summary style="font-size:0.8em;color:#777;cursor:pointer;">HSL Adjustments</summary>
+        <div style="margin-top:4px;" id="hsl-sliders">
+          <!-- Red -->
+          <div style="font-size:0.75em;color:#e66;margin-top:4px;">Red</div>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Sat</span> <input type="range" id="hsl-red-sat" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-red-sat-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Lum</span> <input type="range" id="hsl-red-lum" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-red-lum-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <!-- Orange -->
+          <div style="font-size:0.75em;color:#fa4;margin-top:4px;">Orange</div>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Sat</span> <input type="range" id="hsl-orange-sat" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-orange-sat-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Lum</span> <input type="range" id="hsl-orange-lum" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-orange-lum-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <!-- Yellow -->
+          <div style="font-size:0.75em;color:#ee0;margin-top:4px;">Yellow</div>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Sat</span> <input type="range" id="hsl-yellow-sat" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-yellow-sat-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Lum</span> <input type="range" id="hsl-yellow-lum" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-yellow-lum-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <!-- Green -->
+          <div style="font-size:0.75em;color:#4a4;margin-top:4px;">Green</div>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Sat</span> <input type="range" id="hsl-green-sat" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-green-sat-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Lum</span> <input type="range" id="hsl-green-lum" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-green-lum-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <!-- Cyan -->
+          <div style="font-size:0.75em;color:#0aa;margin-top:4px;">Cyan</div>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Sat</span> <input type="range" id="hsl-cyan-sat" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-cyan-sat-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Lum</span> <input type="range" id="hsl-cyan-lum" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-cyan-lum-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <!-- Blue -->
+          <div style="font-size:0.75em;color:#48f;margin-top:4px;">Blue</div>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Sat</span> <input type="range" id="hsl-blue-sat" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-blue-sat-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Lum</span> <input type="range" id="hsl-blue-lum" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-blue-lum-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <!-- Purple -->
+          <div style="font-size:0.75em;color:#a4e;margin-top:4px;">Purple</div>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Sat</span> <input type="range" id="hsl-purple-sat" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-purple-sat-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Lum</span> <input type="range" id="hsl-purple-lum" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-purple-lum-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <!-- Magenta -->
+          <div style="font-size:0.75em;color:#e4a;margin-top:4px;">Magenta</div>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Sat</span> <input type="range" id="hsl-magenta-sat" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-magenta-sat-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+          <label style="font-size:0.8em;"><span class="lbl" style="min-width:30px;">Lum</span> <input type="range" id="hsl-magenta-lum" min="-100" max="100" step="1" value="0"> <input type="number" id="hsl-magenta-lum-num" min="-100" max="100" step="1" value="0" style="width:45px;"></label>
+        </div>
+      </details>
+
+      <!-- Sharpen -->
+      <div style="font-size:0.8em;color:#777;margin:8px 0 4px;">Sharpen</div>
+      <label style="font-size:0.8em;"><span class="lbl" style="min-width:50px;">Amount</span> <input type="range" id="sl-sharpen-amount" min="0" max="200" step="1" value="0"> <input type="number" id="num-sharpen-amount" min="0" max="200" step="1" value="0" style="width:45px;"></label>
+      <label style="font-size:0.8em;"><span class="lbl" style="min-width:50px;">Radius</span> <input type="range" id="sl-sharpen-radius" min="0.5" max="5.0" step="0.1" value="1.0"> <input type="number" id="num-sharpen-radius" min="0.5" max="5.0" step="0.1" value="1.0" style="width:45px;"></label>
+      <label style="font-size:0.8em;"><span class="lbl" style="min-width:50px;">Threshold</span> <input type="range" id="sl-sharpen-threshold" min="0" max="20" step="1" value="0"> <input type="number" id="num-sharpen-threshold" min="0" max="20" step="1" value="0" style="width:45px;"></label>
+
+      <!-- Reset -->
+      <button class="btn" id="btn-reset-edit" style="margin-top:8px;width:100%;font-size:0.85em;">Reset All Edits</button>
+    </div>
+  </details>
+
   <!-- Crop -->
   <div class="section">
     <h2>Crop</h2>
@@ -561,6 +632,7 @@ const sliderPairs = [
   { sl: "sl-black",    num: "num-black" },
   { sl: "sl-softclip", num: "num-softclip" },
   { sl: "sl-offset",   num: "num-offset" },
+  { sl: "sl-tint",     num: "num-tint" },
   { sl: "sl-wbh-r",    num: "num-wbh-r" },
   { sl: "sl-wbh-g",    num: "num-wbh-g" },
   { sl: "sl-wbh-b",    num: "num-wbh-b" },
@@ -695,6 +767,7 @@ function updateUI(params) {
     "sl-dmax": params.d_max, "sl-gamma": params.gamma,
     "sl-exposure": params.exposure, "sl-black": params.black,
     "sl-softclip": params.soft_clip, "sl-offset": params.offset,
+    "sl-tint": params.tint,
   };
   for (const [slId, val] of Object.entries(mapping)) {
     if (val !== undefined) {
@@ -1638,6 +1711,256 @@ $("border-buffer").addEventListener("input", (e) => {
     body: JSON.stringify({border_px: v}),
   });
 });
+
+// ---- Post-inversion Edit controls ----
+
+// Tint slider: push as post-edit (fast path, no re-inversion)
+let postEditDebounce = null;
+function pushPostEdit() {
+  clearTimeout(postEditDebounce);
+  postEditDebounce = setTimeout(() => {
+    fetch("/api/post-edit", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(gatherPostEdits()),
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { alert(data.error); return; }
+      img.src = "/api/preview/result?" + Date.now();
+      if (data.auto_saved) flashStatus("Auto-saved");
+      fetchAndDrawHistogram();
+    })
+    .catch(e => alert("Post-edit failed: " + e));
+  }, 200);
+}
+
+function gatherPostEdits() {
+  return {
+    tint: parseFloat($("sl-tint").value),
+    curves: gatherCurves(),
+    hsl: gatherHSL(),
+    sharpen: {
+      amount: parseFloat($("sl-sharpen-amount").value),
+      radius: parseFloat($("sl-sharpen-radius").value),
+      threshold: parseFloat($("sl-sharpen-threshold").value),
+    },
+  };
+}
+
+// Tint slider wiring
+$("sl-tint").addEventListener("input", () => {
+  syncSlToNum("sl-tint", "num-tint");
+  pushPostEdit();
+});
+$("num-tint").addEventListener("input", () => {
+  syncNumToSl("num-tint", "sl-tint");
+  pushPostEdit();
+});
+
+// Sharpen sliders
+const sharpenPairs = [
+  {sl: "sl-sharpen-amount", num: "num-sharpen-amount"},
+  {sl: "sl-sharpen-radius", num: "num-sharpen-radius"},
+  {sl: "sl-sharpen-threshold", num: "num-sharpen-threshold"},
+];
+sharpenPairs.forEach(pair => {
+  $(pair.sl).addEventListener("input", () => {
+    syncSlToNum(pair.sl, pair.num);
+    pushPostEdit();
+  });
+  $(pair.num).addEventListener("input", () => {
+    syncNumToSl(pair.num, pair.sl);
+    pushPostEdit();
+  });
+});
+
+// ---- Curve editor ----
+let curveChannel = "composite";
+let curvePoints = {composite: [[0,0],[1,1]], r: [[0,0],[1,1]], g: [[0,0],[1,1]], b: [[0,0],[1,1]]};
+let curveDragging = -1;
+
+function drawCurve() {
+  const canvas = $("curve-canvas");
+  const ctx = canvas.getContext("2d");
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  // Grid
+  ctx.strokeStyle = "#333";
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const p = (i / 4) * w;
+    ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, h); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(w, p); ctx.stroke();
+  }
+
+  // Diagonal reference
+  ctx.strokeStyle = "#444";
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(0, h); ctx.lineTo(w, 0); ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Curve line
+  const pts = curvePoints[curveChannel] || [[0,0],[1,1]];
+  ctx.strokeStyle = "#4a9";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < pts.length; i++) {
+    const x = pts[i][0] * w;
+    const y = (1 - pts[i][1]) * h;
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // Control points
+  for (let i = 0; i < pts.length; i++) {
+    const x = pts[i][0] * w;
+    const y = (1 - pts[i][1]) * h;
+    ctx.fillStyle = i === 0 || i === pts.length - 1 ? "#888" : "#fff";
+    ctx.beginPath();
+    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// Channel buttons
+document.querySelectorAll("[id^='btn-curve-']").forEach(btn => {
+  btn.addEventListener("click", () => {
+    curveChannel = btn.dataset.channel;
+    document.querySelectorAll("[id^='btn-curve-']").forEach(b => b.classList.remove("btn-active"));
+    btn.classList.add("btn-active");
+    drawCurve();
+  });
+});
+$("btn-curve-composite").classList.add("btn-active");
+
+// Curve canvas interaction
+const curveCanvas = $("curve-canvas");
+curveCanvas.addEventListener("mousedown", (e) => {
+  const rect = curveCanvas.getBoundingClientRect();
+  const mx = (e.clientX - rect.left) / rect.width;
+  const my = 1 - (e.clientY - rect.top) / rect.height;
+
+  const pts = curvePoints[curveChannel];
+  // Check if clicking existing point
+  for (let i = 0; i < pts.length; i++) {
+    if (Math.abs(pts[i][0] - mx) < 0.03 && Math.abs(pts[i][1] - my) < 0.03) {
+      curveDragging = i;
+      return;
+    }
+  }
+  // Add new point
+  const idx = pts.findIndex(p => p[0] > mx);
+  if (idx === -1) return; // can't add past end
+  pts.splice(idx, 0, [mx, my]);
+  curveDragging = idx;
+  drawCurve();
+  pushPostEdit();
+});
+
+curveCanvas.addEventListener("mousemove", (e) => {
+  if (curveDragging < 0) return;
+  const rect = curveCanvas.getBoundingClientRect();
+  let mx = (e.clientX - rect.left) / rect.width;
+  let my = 1 - (e.clientY - rect.top) / rect.height;
+  my = Math.max(0, Math.min(1, my));
+
+  const pts = curvePoints[curveChannel];
+  // Clamp x between neighbors
+  const minx = curveDragging > 0 ? pts[curveDragging - 1][0] + 0.001 : 0;
+  const maxx = curveDragging < pts.length - 1 ? pts[curveDragging + 1][0] - 0.001 : 1;
+  mx = Math.max(minx, Math.min(maxx, mx));
+
+  pts[curveDragging] = [mx, my];
+  drawCurve();
+  pushPostEdit();
+});
+
+window.addEventListener("mouseup", () => { curveDragging = -1; });
+
+$("btn-curve-reset").addEventListener("click", () => {
+  curvePoints[curveChannel] = [[0,0],[1,1]];
+  drawCurve();
+  pushPostEdit();
+});
+
+$("btn-curve-linear").addEventListener("click", () => {
+  curvePoints[curveChannel] = [[0,0],[1,1]];
+  drawCurve();
+  pushPostEdit();
+});
+
+function gatherCurves() {
+  const result = {};
+  let hasAny = false;
+  for (const [ch, pts] of Object.entries(curvePoints)) {
+    if (pts.length > 2 || (pts.length === 2 && (Math.abs(pts[0][1]) > 0.001 || Math.abs(pts[1][1] - 1) > 0.001))) {
+      result[ch] = pts.map(p => [parseFloat(p[0].toFixed(4)), parseFloat(p[1].toFixed(4))]);
+      hasAny = true;
+    }
+  }
+  return hasAny ? result : null;
+}
+
+// ---- HSL sliders ----
+const HSL_SECTORS = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "magenta"];
+HSL_SECTORS.forEach(sector => {
+  ["sat", "lum"].forEach(type => {
+    const slId = `hsl-${sector}-${type}`;
+    const numId = `${slId}-num`;
+    $(slId).addEventListener("input", () => {
+      $(numId).value = $(slId).value;
+      pushPostEdit();
+    });
+    $(numId).addEventListener("input", () => {
+      $(slId).value = $(numId).value;
+      pushPostEdit();
+    });
+  });
+});
+
+function gatherHSL() {
+  const result = {};
+  let hasAny = false;
+  HSL_SECTORS.forEach(sector => {
+    const sat = parseInt($(`hsl-${sector}-sat`).value);
+    const lum = parseInt($(`hsl-${sector}-lum`).value);
+    if (sat !== 0 || lum !== 0) {
+      result[sector] = {saturation: sat, luminance: lum};
+      hasAny = true;
+    }
+  });
+  return hasAny ? result : null;
+}
+
+// Reset all edits
+$("btn-reset-edit").addEventListener("click", () => {
+  setLoading(true);
+  fetch("/api/post-edit/reset", {method: "POST"})
+  .then(r => r.json())
+  .then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    // Reset local state
+    $("sl-tint").value = 0; $("num-tint").value = "0.00";
+    curvePoints = {composite: [[0,0],[1,1]], r: [[0,0],[1,1]], g: [[0,0],[1,1]], b: [[0,0],[1,1]]};
+    drawCurve();
+    HSL_SECTORS.forEach(s => {
+      $(`hsl-${s}-sat`).value = 0; $(`hsl-${s}-sat-num`).value = 0;
+      $(`hsl-${s}-lum`).value = 0; $(`hsl-${s}-lum-num`).value = 0;
+    });
+    $("sl-sharpen-amount").value = 0; $("num-sharpen-amount").value = 0;
+    $("sl-sharpen-radius").value = 1.0; $("num-sharpen-radius").value = "1.0";
+    $("sl-sharpen-threshold").value = 0; $("num-sharpen-threshold").value = 0;
+    img.src = "/api/preview/result?" + Date.now();
+    flashStatus("Edits reset");
+  })
+  .catch(e => { setLoading(false); alert("Reset failed: " + e); });
+});
+
+// Draw initial curve
+drawCurve();
 </script>
 
 <!-- Shortcut overlay -->

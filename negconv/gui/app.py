@@ -111,6 +111,7 @@ def _snapshot_params(state: GuiState) -> dict:
         "black": state.params.black,
         "gamma": state.params.gamma,
         "soft_clip": state.params.soft_clip,
+        "tint": state.params.tint,
     }
 
 
@@ -126,6 +127,7 @@ def _restore_snapshot(state: GuiState, snap: dict) -> None:
     p.black = snap["black"]
     p.gamma = snap["gamma"]
     p.soft_clip = snap["soft_clip"]
+    p.tint = snap.get("tint", 0.0)
 
 
 @dataclass
@@ -152,6 +154,9 @@ class GuiState:
     lut_data: dict | None = None
     highlight_recovery: bool = False
     result_rec2020: np.ndarray | None = None
+    post_edit_curves: dict | None = None
+    post_edit_hsl: dict | None = None
+    post_edit_sharpen: dict | None = None
 
 
 def _sample_patch(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
@@ -214,12 +219,23 @@ def _auto_save(state: GuiState) -> bool:
         "black": state.params.black,
         "gamma": state.params.gamma,
         "soft_clip": state.params.soft_clip,
+        "tint": state.params.tint,
     }
     if state.crop_rect is not None:
         data["crop_rect"] = state.crop_rect
     data["orientation"] = state.orientation
     data["flip_h"] = state.flip_h
     data["flip_v"] = state.flip_v
+    # Post-edit params
+    if state.post_edit_curves:
+        data["postEdit"] = data.get("postEdit", {})
+        data["postEdit"]["curves"] = state.post_edit_curves
+    if state.post_edit_hsl:
+        data["postEdit"] = data.get("postEdit", {})
+        data["postEdit"]["hsl"] = state.post_edit_hsl
+    if state.post_edit_sharpen:
+        data["postEdit"] = data.get("postEdit", {})
+        data["postEdit"]["sharpen"] = state.post_edit_sharpen
     Path(sp).parent.mkdir(parents=True, exist_ok=True)
     with open(sp, "w") as f:
         json.dump(data, f, indent=2)
@@ -250,6 +266,12 @@ def _apply_sidecar(state: GuiState, data: dict) -> None:
     state.orientation = data.get("orientation", 0)
     state.flip_h = data.get("flip_h", False)
     state.flip_v = data.get("flip_v", False)
+    if "tint" in data:
+        p.tint = float(data["tint"])
+    post_edit = data.get("postEdit", {})
+    state.post_edit_curves = post_edit.get("curves", None)
+    state.post_edit_hsl = post_edit.get("hsl", None)
+    state.post_edit_sharpen = post_edit.get("sharpen", None)
 
 
 def _load_recent() -> list[dict]:
@@ -392,6 +414,9 @@ def _load_file(state: GuiState, path: str) -> bool:
     state.flip_h = False
     state.flip_v = False
     state.history.clear()
+    state.post_edit_curves = None
+    state.post_edit_hsl = None
+    state.post_edit_sharpen = None
 
     sidecar_loaded = False
     sidecar = _load_sidecar(path)
@@ -419,7 +444,13 @@ def _run_pipeline(state: GuiState) -> None:
 
     When a LUT is loaded, gamma/soft_clip are set to identity so stages 4+5
     become no-ops, then the LUT is applied to the Stage 3 output.
+
+    Post-inversion edits (tint, curves, HSL, sharpen) are applied to the
+    cached pipeline output before sRGB conversion — they do NOT re-run
+    the Cineon inversion.
     """
+    from ..postproc import apply_post_edits
+
     pipeline_input = _get_pipeline_input(state)
 
     if state.highlight_recovery:
@@ -439,7 +470,42 @@ def _run_pipeline(state: GuiState) -> None:
         result = invert(pipeline_input, state.params)
 
     state.result_rec2020 = result
-    result_srgb = rec2020_to_srgb(result)
+
+    # Apply post-inversion edits on cached pipeline output
+    edited = apply_post_edits(
+        result,
+        tint=state.params.tint,
+        curves=state.post_edit_curves,
+        hsl=state.post_edit_hsl,
+        sharpen=state.post_edit_sharpen,
+    )
+
+    result_srgb = rec2020_to_srgb(edited)
+    result_srgb = np.clip(result_srgb, 0, None)
+    max_w = state.settings.get("preview_max_width", PREVIEW_MAX_WIDTH)
+    quality = state.settings.get("preview_quality", 90)
+    state.result_preview = make_preview(result_srgb, max_w, quality=quality)
+
+
+def _reapply_post_edits(state: GuiState) -> None:
+    """Re-apply post-inversion edits to cached pipeline output (no re-inversion).
+
+    Used when only post-edit params change — much faster than _run_pipeline.
+    """
+    from ..postproc import apply_post_edits
+
+    if state.result_rec2020 is None:
+        return
+
+    edited = apply_post_edits(
+        state.result_rec2020,
+        tint=state.params.tint,
+        curves=state.post_edit_curves,
+        hsl=state.post_edit_hsl,
+        sharpen=state.post_edit_sharpen,
+    )
+
+    result_srgb = rec2020_to_srgb(edited)
     result_srgb = np.clip(result_srgb, 0, None)
     max_w = state.settings.get("preview_max_width", PREVIEW_MAX_WIDTH)
     quality = state.settings.get("preview_quality", 90)
@@ -459,6 +525,7 @@ def _snapshot_carry(state: GuiState) -> dict:
             "black": state.params.black,
             "gamma": state.params.gamma,
             "soft_clip": state.params.soft_clip,
+            "tint": state.params.tint,
         },
         "crop_rect": state.crop_rect,
         "orientation": state.orientation,
@@ -831,6 +898,9 @@ def create_app() -> Flask:
         state.is_raw_input = False
         state.black_level = [0, 0, 0, 0]
         state.history.clear()
+        state.post_edit_curves = None
+        state.post_edit_hsl = None
+        state.post_edit_sharpen = None
         return jsonify({"ok": True})
 
     @app.route("/api/crop", methods=["POST"])
@@ -1302,6 +1372,16 @@ def create_app() -> Flask:
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
 
+        # Apply post-inversion edits
+        from ..postproc import apply_post_edits
+        result = apply_post_edits(
+            result,
+            tint=state.params.tint,
+            curves=state.post_edit_curves,
+            hsl=state.post_edit_hsl,
+            sharpen=state.post_edit_sharpen,
+        )
+
         # Convert Rec.2020 → sRGB for all formats (TIFF-32f keeps Rec.2020)
         if fmt == "tiff32f":
             pass  # Keep in Rec.2020 working space
@@ -1466,6 +1546,75 @@ def create_app() -> Flask:
     def api_get_border_buffer():
         return jsonify({"border_buffer": state.settings.get("border_buffer", 0)})
 
+    # ---- Post-inversion editing ----
+    @app.route("/api/post-edit", methods=["POST"])
+    def api_post_edit():
+        """Apply post-inversion edits without re-running the pipeline.
+
+        Accepts tint, curves, hsl, sharpen params. Only re-applies post-edit
+        stage to the cached pipeline output (fast).
+        """
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+
+        data = request.get_json(force=True)
+
+        if "tint" in data:
+            state.params.tint = float(data["tint"])
+        if "curves" in data:
+            state.post_edit_curves = data["curves"]
+        if "hsl" in data:
+            state.post_edit_hsl = data["hsl"]
+        if "sharpen" in data:
+            state.post_edit_sharpen = data["sharpen"]
+
+        # Fast path: only re-apply post-edits on cached result
+        _reapply_post_edits(state)
+        _auto_save(state)
+        state.history.push(_snapshot_params(state))
+
+        return jsonify({
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "post_edit": {
+                "tint": state.params.tint,
+                "curves": state.post_edit_curves,
+                "hsl": state.post_edit_hsl,
+                "sharpen": state.post_edit_sharpen,
+            },
+        })
+
+    @app.route("/api/post-edit", methods=["GET"])
+    def api_get_post_edit():
+        return jsonify({
+            "tint": state.params.tint,
+            "curves": state.post_edit_curves,
+            "hsl": state.post_edit_hsl,
+            "sharpen": state.post_edit_sharpen,
+        })
+
+    @app.route("/api/post-edit/reset", methods=["POST"])
+    def api_reset_post_edit():
+        """Reset all post-inversion edits to defaults."""
+        state.params.tint = 0.0
+        state.post_edit_curves = None
+        state.post_edit_hsl = None
+        state.post_edit_sharpen = None
+        if state.result_rec2020 is not None:
+            _reapply_post_edits(state)
+        _auto_save(state)
+        state.history.push(_snapshot_params(state))
+        return jsonify({
+            "preview": "/api/preview/result",
+            "params": _params_to_dict(state.params, state.crop_rect),
+            "post_edit": {
+                "tint": 0.0,
+                "curves": None,
+                "hsl": None,
+                "sharpen": None,
+            },
+        })
+
     return app
 
 
@@ -1480,6 +1629,7 @@ def _params_to_dict(params: NegconvParams, crop_rect: dict | None = None) -> dic
         "black": params.black,
         "gamma": params.gamma,
         "soft_clip": params.soft_clip,
+        "tint": params.tint,
     }
     if crop_rect is not None:
         d["crop_rect"] = crop_rect
@@ -1505,6 +1655,8 @@ def _update_params_from_dict(params: NegconvParams, data: dict) -> None:
         params.gamma = float(data["gamma"])
     if "soft_clip" in data:
         params.soft_clip = float(data["soft_clip"])
+    if "tint" in data:
+        params.tint = float(data["tint"])
 
 
 def run_gui(port: int = 5000) -> None:

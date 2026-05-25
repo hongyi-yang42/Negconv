@@ -61,6 +61,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--soft-clip", type=float, default=None)
     p.add_argument("--offset", type=float, default=None)
 
+    # Post-inversion tint
+    p.add_argument("--tint", type=float, default=None,
+                   help="Post-inversion tint (-1.0 green to +1.0 magenta)")
+
+    # Post-inversion sharpening
+    p.add_argument("--sharpen", type=str, default=None, metavar="AMOUNT,RADIUS,THRESHOLD",
+                   help="Post-inversion unsharp mask (e.g. 50,1.0,0)")
+
     # Black level override
     p.add_argument("--black-level", type=str, default=None, metavar="R,Gr,Gb,B",
                    help="Override 4-channel black level (comma-separated)")
@@ -156,6 +164,8 @@ def _apply_cli_overrides(params: NegconvParams, args: argparse.Namespace) -> Non
         params.soft_clip = args.soft_clip
     if args.offset is not None:
         params.offset = args.offset
+    if getattr(args, "tint", None) is not None:
+        params.tint = args.tint
 
 
 def _resolve_params(args: argparse.Namespace, img: np.ndarray) -> NegconvParams:
@@ -216,14 +226,20 @@ def _process_single(
     input_path: str, output_path: str,
     params: NegconvParams, dtype: str,
     fmt: str = "tiff", quality: int = 92,
+    sharpen: dict | None = None,
 ) -> None:
-    """Read, convert to Rec.2020, invert, convert back to sRGB, write."""
+    """Read, convert to Rec.2020, invert, apply post-edits, write."""
     from .color import srgb_to_rec2020, rec2020_to_srgb
+    from .postproc import apply_post_edits
 
     img, raw_input = read_image(input_path)
     if not raw_input:
         img = srgb_to_rec2020(img)
     positive = invert(img, params)
+
+    # Apply post-inversion edits
+    positive = apply_post_edits(positive, tint=params.tint, sharpen=sharpen)
+
     positive = rec2020_to_srgb(positive)
     positive = np.clip(positive, 0, None)
     _write_output(output_path, positive, fmt, dtype, quality)
@@ -246,6 +262,21 @@ def _collect_inputs(input_path: str) -> list[str]:
     return [str(p)]
 
 
+def _parse_sharpen(sharpen_str: str | None) -> dict | None:
+    """Parse --sharpen AMOUNT,RADIUS,THRESHOLD into a dict."""
+    if sharpen_str is None:
+        return None
+    parts = sharpen_str.split(",")
+    if len(parts) != 3:
+        print("error: --sharpen requires AMOUNT,RADIUS,THRESHOLD", file=sys.stderr)
+        sys.exit(1)
+    return {
+        "amount": float(parts[0]),
+        "radius": float(parts[1]),
+        "threshold": float(parts[2]),
+    }
+
+
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
@@ -254,6 +285,8 @@ def main() -> None:
         from .gui import run_gui
         run_gui(port=args.port)
         return
+
+    sharpen = _parse_sharpen(args.sharpen)
 
     if args.list_profiles:
         profiles = list_profiles_fn()
@@ -344,7 +377,7 @@ def main() -> None:
             out_file = output_path / f"{stem}_negconv{fmt_ext}"
             print(f"  Processing {i}/{len(inputs)}: {Path(inp).name}", end="")
             try:
-                _process_single(inp, str(out_file), params, args.dtype, fmt, args.quality)
+                _process_single(inp, str(out_file), params, args.dtype, fmt, args.quality, sharpen=sharpen)
             except Exception as e:
                 print(f" ERROR: {e}", file=sys.stderr)
 
@@ -362,10 +395,12 @@ def main() -> None:
             print(f"  Profile saved: {args.save_profile}")
 
         from .color import srgb_to_rec2020, rec2020_to_srgb
+        from .postproc import apply_post_edits
 
         if not raw_input:
             img = srgb_to_rec2020(img)
         positive = invert(img, params)
+        positive = apply_post_edits(positive, tint=params.tint, sharpen=sharpen)
         positive = rec2020_to_srgb(positive)
         positive = np.clip(positive, 0, None)
         _write_output(str(output_path), positive, fmt, args.dtype, args.quality)

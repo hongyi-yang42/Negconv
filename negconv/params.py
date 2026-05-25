@@ -23,6 +23,7 @@ PARAM_CATEGORIES = {
     "black": "tone",
     "gamma": "tone",
     "soft_clip": "tone",
+    "tint": "tone",
     # GuiState fields (not in NegconvParams, but needed for carry)
     "crop_rect": "geometry",
     "orientation": "geometry",
@@ -65,6 +66,9 @@ class NegconvParams:
     black: float = 0.0755  # raw param, NOT black_fma
     gamma: float = 4.0
     soft_clip: float = 0.75
+
+    # Post-inversion tint (green-magenta axis, -1 to +1)
+    tint: float = 0.0
 
     @classmethod
     def color_film(cls) -> NegconvParams:
@@ -458,6 +462,7 @@ def save_params(params: NegconvParams, path: str | Path) -> None:
         "black": params.black,
         "gamma": params.gamma,
         "soft_clip": params.soft_clip,
+        "tint": params.tint,
     }
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
@@ -477,4 +482,5 @@ def load_params(path: str | Path) -> NegconvParams:
         black=data["black"],
         gamma=data["gamma"],
         soft_clip=data["soft_clip"],
+        tint=data.get("tint", 0.0),
     )
