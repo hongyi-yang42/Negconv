@@ -1,6 +1,7 @@
 """Sprint 10 tests: roll analysis, border buffer, tint, and post-inversion editing."""
 
 import numpy as np
+import json
 import pytest
 import tempfile
 from pathlib import Path
@@ -9,7 +10,7 @@ from negconv.params import (
     detect_dmin, detect_dmin_percentile, auto_detect, NegconvParams,
     analyze_roll, RollProfile, detect_border_region,
 )
-from negconv.postproc import apply_tint, apply_curves, apply_hsl, apply_sharpen, cubic_spline_lut
+from negconv.postproc import apply_tint, apply_curves, apply_hsl, apply_sharpen, cubic_spline_lut, apply_tone_profile
 
 
 def _make_negative_with_border(
@@ -102,9 +103,9 @@ class TestRollAnalysis:
             data = resp.get_json()
             assert data["count"] == 3
 
-            # Verify sidecars were created
+            # Verify sidecars were created (hidden .negconv/ directory)
             for p in paths:
-                sp = Path(p).with_suffix(".tif.negconv.json")
+                sp = Path(p).parent / ".negconv" / (Path(p).name + ".negconv.json")
                 assert sp.is_file(), f"Sidecar missing for {p}"
                 with open(sp) as f:
                     sidecar = json.load(f)
@@ -240,3 +241,91 @@ class TestSharpen:
         sharp_contrast = abs(edge_bright - edge_dark)
         assert sharp_contrast >= orig_contrast - 0.01, \
             f"Sharpening should increase edge contrast: {sharp_contrast} < {orig_contrast}"
+
+
+class TestToneProfiles:
+    def test_tone_profile_frontier_warmer_than_standard(self):
+        """Lab Warm has higher R/B ratio (warmer) than Standard at midtones."""
+        img = np.full((10, 10, 3), 0.5, dtype=np.float32)
+        standard = apply_tone_profile(img, "standard")
+        warm = apply_tone_profile(img, "lab-warm")
+
+        # Color temperature proxy: R/B ratio
+        warm_rb = warm[0, 0, 0] / max(warm[0, 0, 2], 1e-6)
+        std_rb = standard[0, 0, 0] / max(standard[0, 0, 2], 1e-6)
+        assert warm_rb > std_rb, \
+            f"Lab Warm should be warmer (R/B={warm_rb:.3f}) than Standard ({std_rb:.3f})"
+
+    def test_tone_profile_roundtrip_sidecar(self):
+        """Tone profile selection persists through sidecar save/load."""
+        from negconv.gui.app import create_app
+        import tifffile
+
+        app = create_app()
+        client = app.test_client()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "test.tif"
+            data = np.full((100, 100, 3), 30000, dtype=np.uint16)
+            tifffile.imwrite(str(p), data, photometric="rgb")
+
+            # Load and set tone profile
+            client.post("/api/load", json={"path": str(p)})
+            client.post("/api/post-edit", json={"tone_profile": "lab-warm"})
+
+            # Reload and verify tone profile restored
+            client.post("/api/load", json={"path": str(p)})
+            resp = client.get("/api/post-edit")
+            pe = resp.get_json()
+            assert pe["tone_profile"] == "lab-warm", \
+                f"Expected 'lab-warm', got '{pe['tone_profile']}'"
+
+    def test_hidden_sidecar_write_read(self):
+        """Sidecar is written to .negconv/ subdirectory."""
+        from negconv.gui.app import create_app
+        import tifffile
+
+        app = create_app()
+        client = app.test_client()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "test.tif"
+            data = np.full((100, 100, 3), 30000, dtype=np.uint16)
+            tifffile.imwrite(str(p), data, photometric="rgb")
+
+            client.post("/api/load", json={"path": str(p)})
+            client.post("/api/params", json={"gamma": 5.0})
+
+            # Verify sidecar in .negconv/ subdir
+            hidden = Path(tmp) / ".negconv" / "test.tif.negconv.json"
+            assert hidden.is_file(), f"Hidden sidecar not found at {hidden}"
+
+            with open(hidden) as f:
+                sidecar = json.load(f)
+            assert abs(sidecar["gamma"] - 5.0) < 0.01
+
+    def test_legacy_sidecar_migration(self):
+        """Legacy sidecar (beside file) is found and loaded."""
+        from negconv.gui.app import create_app
+        import tifffile
+
+        app = create_app()
+        client = app.test_client()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "test.tif"
+            data = np.full((100, 100, 3), 30000, dtype=np.uint16)
+            tifffile.imwrite(str(p), data, photometric="rgb")
+
+            # Write a legacy sidecar (beside the file)
+            legacy = str(p) + ".negconv.json"
+            with open(legacy, "w") as f:
+                json.dump({"gamma": 7.0, "dmin": [1.13, 0.49, 0.27],
+                           "d_max": 1.6, "wb_high": [1,1,1], "wb_low": [1,1,1],
+                           "offset": -0.05, "exposure": 0.9245, "black": 0.0755,
+                           "soft_clip": 0.75}, f)
+
+            resp = client.post("/api/load", json={"path": str(p)})
+            data_resp = resp.get_json()
+            assert data_resp["sidecar_loaded"] is True
+            assert abs(data_resp["params"]["gamma"] - 7.0) < 0.01

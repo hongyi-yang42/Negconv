@@ -125,6 +125,19 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     </div>
   </div>
 
+  <!-- Tone Profile -->
+  <div class="section">
+    <h2>Tone Profile</h2>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <select id="tone-profile" style="flex:1;background:#333;border:1px solid #444;color:#ddd;padding:4px;border-radius:3px;font-size:0.85em;">
+        <option value="standard">Standard</option>
+        <option value="lab-warm">Lab Warm (Frontier)</option>
+        <option value="lab-neutral">Lab Neutral (Noritsu)</option>
+        <option value="cinematic">Cinematic</option>
+      </select>
+    </div>
+  </div>
+
   <!-- LUT -->
   <div class="section">
     <h2>Look LUT</h2>
@@ -813,6 +826,12 @@ function applyLoadResponse(data) {
     [previewWidth, previewHeight] = [previewHeight, previewWidth];
   }
   updateUI(data.params);
+  // Restore tone profile from sidecar
+  fetch("/api/post-edit").then(r => r.json()).then(pe => {
+    if (pe.tone_profile) {
+      $("tone-profile").value = pe.tone_profile;
+    }
+  }).catch(() => {});
   updateStatus();
   updateCropOverlay();
   fitToWindow();
@@ -1953,6 +1972,7 @@ $("btn-reset-edit").addEventListener("click", () => {
     $("sl-sharpen-amount").value = 0; $("num-sharpen-amount").value = 0;
     $("sl-sharpen-radius").value = 1.0; $("num-sharpen-radius").value = "1.0";
     $("sl-sharpen-threshold").value = 0; $("num-sharpen-threshold").value = 0;
+    $("tone-profile").value = "standard";
     img.src = "/api/preview/result?" + Date.now();
     flashStatus("Edits reset");
   })
@@ -1961,6 +1981,33 @@ $("btn-reset-edit").addEventListener("click", () => {
 
 // Draw initial curve
 drawCurve();
+
+// ---- Tone Profile dropdown ----
+$("tone-profile").addEventListener("change", () => {
+  const profile = $("tone-profile").value;
+  pushPostEditWith({tone_profile: profile});
+});
+
+function pushPostEditWith(extra) {
+  const data = gatherPostEdits();
+  Object.assign(data, extra);
+  clearTimeout(postEditDebounce);
+  postEditDebounce = setTimeout(() => {
+    fetch("/api/post-edit", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(data),
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) { alert(data.error); return; }
+      img.src = "/api/preview/result?" + Date.now();
+      if (data.auto_saved) flashStatus("Auto-saved");
+      fetchAndDrawHistogram();
+    })
+    .catch(e => alert("Post-edit failed: " + e));
+  }, 200);
+}
 </script>
 
 <!-- Shortcut overlay -->

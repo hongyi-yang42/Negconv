@@ -4,6 +4,7 @@ import io
 import json
 import os
 import tempfile
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -12,6 +13,13 @@ from PIL import Image
 
 from negconv.gui.app import create_app, _sample_patch
 from negconv.gui.viewer import linear_to_srgb, make_preview
+
+
+def _sidecar_path(file_path: str) -> str:
+    """Compute hidden sidecar path matching app.py behavior."""
+    from pathlib import Path
+    p = Path(file_path)
+    return str(p.parent / ".negconv" / (p.name + ".negconv.json"))
 
 
 class TestViewerSRGB:
@@ -374,14 +382,14 @@ class TestAutoSaveSidecar:
             assert resp.status_code == 200
             assert resp.get_json()["auto_saved"] is True
 
-            sidecar_path = path + ".negconv.json"
+            sidecar_path = _sidecar_path(path)
             assert os.path.isfile(sidecar_path)
             with open(sidecar_path) as sf:
                 saved = json.load(sf)
             assert abs(saved["gamma"] - 6.0) < 0.01
         finally:
             os.unlink(path)
-            sidecar_path = path + ".negconv.json"
+            sidecar_path = _sidecar_path(path)
             if os.path.isfile(sidecar_path):
                 os.unlink(sidecar_path)
 
@@ -398,7 +406,7 @@ class TestAutoSaveSidecar:
 
         try:
             # Write a sidecar with custom gamma
-            sidecar_path = path + ".negconv.json"
+            sidecar_path = _sidecar_path(path)
             with open(sidecar_path, "w") as sf:
                 json.dump({"gamma": 7.5}, sf)
 
@@ -641,7 +649,7 @@ class TestRotateFlip:
         app.config["TESTING"] = True
         client = app.test_client()
         path = self._make_tiff(50, 50)
-        sidecar = path + ".negconv.json"
+        sidecar = _sidecar_path(path)
         try:
             client.post("/api/load", json={"path": path})
             client.post("/api/rotate", json={"action": "cw"})
@@ -831,7 +839,8 @@ class TestFilmstrip:
         p2 = self._make_tiff(tmp_path, "bbb.tif")
 
         # Create sidecar for file 2 with gamma=3.0
-        sidecar = p2 + ".negconv.json"
+        sidecar = _sidecar_path(p2)
+        Path(sidecar).parent.mkdir(parents=True, exist_ok=True)
         with open(sidecar, "w") as f:
             json.dump({"gamma": 3.0}, f)
 
@@ -863,7 +872,7 @@ class TestFilmstrip:
         app.config["TESTING"] = True
         client = app.test_client()
 
-        sidecar = p1 + ".negconv.json"
+        sidecar = _sidecar_path(p1)
         try:
             client.post("/api/load", json={"path": p1})
             client.post("/api/params", json={"gamma": 7.0})

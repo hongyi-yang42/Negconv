@@ -157,6 +157,7 @@ class GuiState:
     post_edit_curves: dict | None = None
     post_edit_hsl: dict | None = None
     post_edit_sharpen: dict | None = None
+    tone_profile: str = "standard"
 
 
 def _sample_patch(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> np.ndarray:
@@ -199,8 +200,20 @@ def _orient_preview(jpeg_bytes: bytes, state: GuiState) -> bytes:
     return buf.getvalue()
 
 
-def _sidecar_path(file_path: str) -> str:
-    """Return the sidecar path for a given source file."""
+def _sidecar_path(file_path: str, use_hidden: bool = True) -> str:
+    """Return the sidecar path for a given source file.
+
+    New location: <parent>/.negconv/<filename>.negconv.json
+    Legacy: <file>.negconv.json (beside the file)
+    """
+    if use_hidden:
+        p = Path(file_path)
+        return str(p.parent / ".negconv" / (p.name + ".negconv.json"))
+    return str(file_path) + ".negconv.json"
+
+
+def _legacy_sidecar_path(file_path: str) -> str:
+    """Return the legacy sidecar path (beside the file)."""
     return str(file_path) + ".negconv.json"
 
 
@@ -236,6 +249,8 @@ def _auto_save(state: GuiState) -> bool:
     if state.post_edit_sharpen:
         data["postEdit"] = data.get("postEdit", {})
         data["postEdit"]["sharpen"] = state.post_edit_sharpen
+    if state.tone_profile and state.tone_profile != "standard":
+        data["toneProfile"] = state.tone_profile
     Path(sp).parent.mkdir(parents=True, exist_ok=True)
     with open(sp, "w") as f:
         json.dump(data, f, indent=2)
@@ -243,8 +258,14 @@ def _auto_save(state: GuiState) -> bool:
 
 
 def _load_sidecar(file_path: str) -> dict | None:
-    """Load sidecar JSON if it exists. Returns dict or None."""
-    sp = _sidecar_path(file_path)
+    """Load sidecar JSON if it exists. Checks .negconv/ first, then legacy."""
+    # New hidden location takes priority
+    sp = _sidecar_path(file_path, use_hidden=True)
+    if os.path.isfile(sp):
+        with open(sp) as f:
+            return json.load(f)
+    # Legacy location (beside file)
+    sp = _legacy_sidecar_path(file_path)
     if os.path.isfile(sp):
         with open(sp) as f:
             return json.load(f)
@@ -272,6 +293,7 @@ def _apply_sidecar(state: GuiState, data: dict) -> None:
     state.post_edit_curves = post_edit.get("curves", None)
     state.post_edit_hsl = post_edit.get("hsl", None)
     state.post_edit_sharpen = post_edit.get("sharpen", None)
+    state.tone_profile = data.get("toneProfile", "standard")
 
 
 def _load_recent() -> list[dict]:
@@ -417,6 +439,7 @@ def _load_file(state: GuiState, path: str) -> bool:
     state.post_edit_curves = None
     state.post_edit_hsl = None
     state.post_edit_sharpen = None
+    state.tone_profile = "standard"
 
     sidecar_loaded = False
     sidecar = _load_sidecar(path)
@@ -478,6 +501,7 @@ def _run_pipeline(state: GuiState) -> None:
         curves=state.post_edit_curves,
         hsl=state.post_edit_hsl,
         sharpen=state.post_edit_sharpen,
+        tone_profile=state.tone_profile,
     )
 
     result_srgb = rec2020_to_srgb(edited)
@@ -503,6 +527,7 @@ def _reapply_post_edits(state: GuiState) -> None:
         curves=state.post_edit_curves,
         hsl=state.post_edit_hsl,
         sharpen=state.post_edit_sharpen,
+        tone_profile=state.tone_profile,
     )
 
     result_srgb = rec2020_to_srgb(edited)
@@ -902,6 +927,7 @@ def create_app() -> Flask:
         state.post_edit_curves = None
         state.post_edit_hsl = None
         state.post_edit_sharpen = None
+        state.tone_profile = "standard"
         return jsonify({"ok": True})
 
     @app.route("/api/crop", methods=["POST"])
@@ -1381,6 +1407,7 @@ def create_app() -> Flask:
             curves=state.post_edit_curves,
             hsl=state.post_edit_hsl,
             sharpen=state.post_edit_sharpen,
+            tone_profile=state.tone_profile,
         )
 
         # Convert Rec.2020 → sRGB for all formats (TIFF-32f keeps Rec.2020)
@@ -1578,6 +1605,8 @@ def create_app() -> Flask:
             state.post_edit_hsl = data["hsl"]
         if "sharpen" in data:
             state.post_edit_sharpen = data["sharpen"]
+        if "tone_profile" in data:
+            state.tone_profile = data["tone_profile"]
 
         # Fast path: only re-apply post-edits on cached result
         _reapply_post_edits(state)
@@ -1592,6 +1621,7 @@ def create_app() -> Flask:
                 "curves": state.post_edit_curves,
                 "hsl": state.post_edit_hsl,
                 "sharpen": state.post_edit_sharpen,
+                "tone_profile": state.tone_profile,
             },
         })
 
@@ -1602,6 +1632,7 @@ def create_app() -> Flask:
             "curves": state.post_edit_curves,
             "hsl": state.post_edit_hsl,
             "sharpen": state.post_edit_sharpen,
+            "tone_profile": state.tone_profile,
         })
 
     @app.route("/api/post-edit/reset", methods=["POST"])
@@ -1611,6 +1642,7 @@ def create_app() -> Flask:
         state.post_edit_curves = None
         state.post_edit_hsl = None
         state.post_edit_sharpen = None
+        state.tone_profile = "standard"
         if state.result_rec2020 is not None:
             _reapply_post_edits(state)
         _auto_save(state)
@@ -1623,6 +1655,7 @@ def create_app() -> Flask:
                 "curves": None,
                 "hsl": None,
                 "sharpen": None,
+                "tone_profile": "standard",
             },
         })
 

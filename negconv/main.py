@@ -69,6 +69,15 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sharpen", type=str, default=None, metavar="AMOUNT,RADIUS,THRESHOLD",
                    help="Post-inversion unsharp mask (e.g. 50,1.0,0)")
 
+    # Tone profile
+    p.add_argument("--tone-profile", choices=["standard", "lab-warm", "lab-neutral", "cinematic"],
+                   default="standard",
+                   help="Built-in tone profile (default: standard)")
+
+    # Sidecar directory
+    p.add_argument("--sidecar-dir", choices=["hidden", "legacy"], default="hidden",
+                   help="Sidecar location: hidden (.negconv/ subdir) or legacy (beside file)")
+
     # Black level override
     p.add_argument("--black-level", type=str, default=None, metavar="R,Gr,Gb,B",
                    help="Override 4-channel black level (comma-separated)")
@@ -227,6 +236,7 @@ def _process_single(
     params: NegconvParams, dtype: str,
     fmt: str = "tiff", quality: int = 92,
     sharpen: dict | None = None,
+    tone_profile: str = "standard",
 ) -> None:
     """Read, convert to Rec.2020, invert, apply post-edits, write."""
     from .color import srgb_to_rec2020, rec2020_to_srgb
@@ -238,7 +248,8 @@ def _process_single(
     positive = invert(img, params)
 
     # Apply post-inversion edits
-    positive = apply_post_edits(positive, tint=params.tint, sharpen=sharpen)
+    positive = apply_post_edits(positive, tint=params.tint, sharpen=sharpen,
+                                tone_profile=tone_profile)
 
     positive = rec2020_to_srgb(positive)
     positive = np.clip(positive, 0, None)
@@ -377,7 +388,8 @@ def main() -> None:
             out_file = output_path / f"{stem}_negconv{fmt_ext}"
             print(f"  Processing {i}/{len(inputs)}: {Path(inp).name}", end="")
             try:
-                _process_single(inp, str(out_file), params, args.dtype, fmt, args.quality, sharpen=sharpen)
+                _process_single(inp, str(out_file), params, args.dtype, fmt, args.quality,
+                                sharpen=sharpen, tone_profile=args.tone_profile)
             except Exception as e:
                 print(f" ERROR: {e}", file=sys.stderr)
 
@@ -400,7 +412,8 @@ def main() -> None:
         if not raw_input:
             img = srgb_to_rec2020(img)
         positive = invert(img, params)
-        positive = apply_post_edits(positive, tint=params.tint, sharpen=sharpen)
+        positive = apply_post_edits(positive, tint=params.tint, sharpen=sharpen,
+                                    tone_profile=args.tone_profile)
         positive = rec2020_to_srgb(positive)
         positive = np.clip(positive, 0, None)
         _write_output(str(output_path), positive, fmt, args.dtype, args.quality)

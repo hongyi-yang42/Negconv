@@ -333,19 +333,126 @@ def apply_sharpen(img: np.ndarray, amount: float = 0.0,
     return result
 
 
+# ---- Built-in tone profiles ----
+
+# Each profile is a dict with optional:
+#   matrix: 3x3 color shift (Rec.2020 space)
+#   curve: list of (input, output) control points for a composite tone curve
+#   shadow_lift: amount to raise shadows (0-0.05)
+#   highlight_rolloff: soften highlights above this threshold (0.8-1.0)
+
+TONE_PROFILES = {
+    "standard": None,  # bypass
+    "lab-warm": {
+        # Frontier-inspired: warm shadows, lifted blacks, slight magenta highlights
+        "matrix": np.array([
+            [1.02, 0.02, 0.00],
+            [0.00, 0.98, 0.00],
+            [0.00, -0.01, 1.03],
+        ], dtype=np.float32),
+        "curve": [(0, 0.01), (0.15, 0.12), (0.4, 0.38), (0.7, 0.72), (0.9, 0.91), (1, 1)],
+        "shadow_lift": 0.015,
+    },
+    "lab-neutral": {
+        # Noritsu-inspired: clean neutrals, smooth highlight rolloff
+        "matrix": np.array([
+            [1.00, 0.00, 0.00],
+            [0.00, 1.00, 0.00],
+            [0.00, 0.00, 1.00],
+        ], dtype=np.float32),
+        "curve": [(0, 0.005), (0.25, 0.24), (0.5, 0.50), (0.75, 0.76), (0.95, 0.94), (1, 1)],
+        "highlight_rolloff": 0.88,
+    },
+    "cinematic": {
+        # Low contrast mids, extended highlight shoulder, cool shadows
+        "matrix": np.array([
+            [0.98, 0.00, 0.00],
+            [0.00, 1.00, 0.00],
+            [0.02, 0.00, 1.02],
+        ], dtype=np.float32),
+        "curve": [(0, 0.02), (0.2, 0.16), (0.4, 0.35), (0.6, 0.58), (0.8, 0.80), (1, 1)],
+        "shadow_lift": 0.02,
+    },
+}
+
+
+def apply_tone_profile(img: np.ndarray, profile_name: str) -> np.ndarray:
+    """Apply a built-in tone profile to pipeline output.
+
+    Profiles simulate classic photo lab looks via color matrix + tone curve.
+    Applied before user edits (tint/curves/HSL/sharpen).
+
+    Args:
+        img: Pipeline output, float32 (H, W, 3), range [0, 1+].
+        profile_name: One of "standard", "lab-warm", "lab-neutral", "cinematic".
+
+    Returns:
+        Profiled image.
+    """
+    if profile_name == "standard" or profile_name not in TONE_PROFILES:
+        return img
+
+    profile = TONE_PROFILES[profile_name]
+    if profile is None:
+        return img
+
+    result = img.copy()
+
+    # Color matrix shift
+    if "matrix" in profile:
+        m = profile["matrix"]
+        flat = result.reshape(-1, 3)
+        shifted = flat @ m.T
+        # Preserve >1.0 highlights
+        over = flat > 1.0
+        result = np.where(over.reshape(result.shape), result, shifted.reshape(result.shape))
+
+    # Shadow lift (additive, fades out above shadow region)
+    if "shadow_lift" in profile:
+        lift = np.float32(profile["shadow_lift"])
+        lum = 0.2126 * result[:, :, 0] + 0.7152 * result[:, :, 1] + 0.0722 * result[:, :, 2]
+        # Weight: 1.0 at black, fades to 0 at lum=0.15
+        weight = np.clip(1.0 - lum / 0.15, 0, 1)
+        result += weight[:, :, np.newaxis] * lift
+
+    # Tone curve (composite, applied as LUT)
+    if "curve" in profile:
+        lut = cubic_spline_lut(profile["curve"])
+        for c in range(3):
+            over = result[:, :, c] > 1.0
+            idx = np.clip((np.clip(result[:, :, c], 0, 1) * 255).astype(np.int32), 0, 255)
+            result[:, :, c] = np.where(over, result[:, :, c], lut[idx])
+
+    # Highlight rolloff (soft compress above threshold)
+    if "highlight_rolloff" in profile:
+        thr = np.float32(profile["highlight_rolloff"])
+        mask = result > thr
+        if np.any(mask):
+            excess = result - thr
+            one_minus_thr = np.float32(1.0) - thr
+            compressed = thr + one_minus_thr * (1.0 - np.exp(-excess / one_minus_thr))
+            result = np.where(mask, compressed, result)
+
+    return result
+
+
 def apply_post_edits(
     img: np.ndarray,
     tint: float = 0.0,
     curves: dict | None = None,
     hsl: dict | None = None,
     sharpen: dict | None = None,
+    tone_profile: str = "standard",
 ) -> np.ndarray:
     """Apply full post-edit chain to cached pipeline output.
 
-    Order: tint → curves → HSL → sharpen.
+    Order: tone_profile → tint → curves → HSL → sharpen.
     All operate on Rec.2020 float32.
     """
     result = img
+
+    if tone_profile and tone_profile != "standard":
+        result = apply_tone_profile(result, tone_profile)
 
     if abs(tint) > 1e-6:
         result = apply_tint(result, tint)
