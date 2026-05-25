@@ -21,7 +21,8 @@ def ensure_profile_dir() -> None:
     PROFILE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def save_profile(name: str, params: NegconvParams, notes: str = "") -> Path:
+def save_profile(name: str, params: NegconvParams, notes: str = "",
+                tone_profile: str = "standard") -> Path:
     """Save current params as a named profile. Returns the profile path."""
     ensure_profile_dir()
     data = {
@@ -40,21 +41,22 @@ def save_profile(name: str, params: NegconvParams, notes: str = "") -> Path:
             "soft_clip": params.soft_clip,
             "tint": params.tint,
         },
+        "tone_profile": tone_profile,
     }
     path = PROFILE_DIR / f"{_sanitize_filename(name)}.json"
     path.write_text(json.dumps(data, indent=2))
     return path
 
 
-def load_profile(name: str) -> NegconvParams:
-    """Load a named profile and return NegconvParams."""
+def load_profile(name: str) -> dict:
+    """Load a named profile. Returns dict with 'params' (NegconvParams) and 'tone_profile' (str)."""
     path = PROFILE_DIR / f"{_sanitize_filename(name)}.json"
     if not path.is_file():
         raise FileNotFoundError(f"Profile not found: {name}")
     with open(path) as f:
         data = json.load(f)
     p = data["params"]
-    return NegconvParams(
+    params = NegconvParams(
         dmin=np.array(p["dmin"], dtype=np.float32),
         d_max=p["d_max"],
         wb_high=np.array(p["wb_high"], dtype=np.float32),
@@ -66,6 +68,10 @@ def load_profile(name: str) -> NegconvParams:
         soft_clip=p["soft_clip"],
         tint=p.get("tint", 0.0),
     )
+    return {
+        "params": params,
+        "tone_profile": data.get("tone_profile", "standard"),
+    }
 
 
 def list_profiles() -> list[dict]:

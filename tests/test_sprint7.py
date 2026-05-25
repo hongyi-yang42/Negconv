@@ -29,7 +29,8 @@ class TestProfiles:
         params.dmin = np.array([0.5, 0.3, 0.1], dtype=np.float32)
 
         save_profile("test_stock", params)
-        loaded = load_profile("test_stock")
+        result = load_profile("test_stock")
+        loaded = result["params"]
 
         assert abs(loaded.gamma - 5.5) < 0.01
         assert abs(loaded.exposure - 1.1) < 0.01

@@ -469,18 +469,19 @@ def save_params(params: NegconvParams, path: str | Path) -> None:
 
 
 def load_params(path: str | Path) -> NegconvParams:
-    """Load params from JSON."""
+    """Load params from JSON. Reads both CLI params.json and GUI sidecar formats."""
     with open(path) as f:
         data = json.load(f)
+    p = data.get("params", data)  # GUI sidecar wraps params; CLI doesn't
     return NegconvParams(
-        dmin=np.array(data["dmin"], dtype=np.float32),
-        d_max=data["d_max"],
-        wb_high=np.array(data["wb_high"], dtype=np.float32),
-        wb_low=np.array(data["wb_low"], dtype=np.float32),
-        offset=data["offset"],
-        exposure=data["exposure"],
-        black=data["black"],
-        gamma=data["gamma"],
-        soft_clip=data["soft_clip"],
-        tint=data.get("tint", 0.0),
+        dmin=np.array(p["dmin"], dtype=np.float32),
+        d_max=p["d_max"],
+        wb_high=np.array(p["wb_high"], dtype=np.float32),
+        wb_low=np.array(p["wb_low"], dtype=np.float32),
+        offset=p["offset"],
+        exposure=p["exposure"],
+        black=p["black"],
+        gamma=p["gamma"],
+        soft_clip=p["soft_clip"],
+        tint=p.get("tint", 0.0),
     )

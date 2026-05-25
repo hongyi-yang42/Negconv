@@ -556,6 +556,7 @@ def _snapshot_carry(state: GuiState) -> dict:
         "orientation": state.orientation,
         "flip_h": state.flip_h,
         "flip_v": state.flip_v,
+        "tone_profile": state.tone_profile,
     }
 
 
@@ -580,6 +581,9 @@ def _apply_carry(state: GuiState, snapshot: dict, categories: dict) -> None:
         state.flip_h = snapshot["flip_h"]
     if "flip_v" in enabled_fields:
         state.flip_v = snapshot["flip_v"]
+    # Carry tone_profile as part of "tone" category
+    if enabled_fields.intersection({"exposure", "gamma", "black", "soft_clip", "offset", "tint"}):
+        state.tone_profile = snapshot.get("tone_profile", "standard")
 
 
 def _redetect_in_crop(state: GuiState) -> None:
@@ -731,10 +735,13 @@ def create_app() -> Flask:
         """Reset current image to defaults: delete sidecar, reload fresh."""
         if not state.file_path:
             return jsonify({"error": "No file loaded"}), 400
-        # Delete sidecar
+        # Delete sidecar (both new hidden and legacy locations)
         sp = _sidecar_path(state.file_path)
         if os.path.isfile(sp):
             os.unlink(sp)
+        lsp = _legacy_sidecar_path(state.file_path)
+        if os.path.isfile(lsp):
+            os.unlink(lsp)
         # Reload with fresh defaults
         try:
             _load_file(state, state.file_path)
@@ -769,7 +776,7 @@ def create_app() -> Flask:
         name = data.get("name", "").strip()
         if not name:
             return jsonify({"error": "Profile name required"}), 400
-        path = save_profile(name, state.params)
+        path = save_profile(name, state.params, tone_profile=state.tone_profile)
         return jsonify({"ok": True, "name": name, "path": str(path)})
 
     @app.route("/api/profiles/load", methods=["POST"])
@@ -779,9 +786,10 @@ def create_app() -> Flask:
         if not name:
             return jsonify({"error": "Profile name required"}), 400
         try:
-            loaded = load_profile(name)
+            result = load_profile(name)
         except FileNotFoundError:
             return jsonify({"error": f"Profile not found: {name}"}), 404
+        loaded = result["params"]
         # Copy loaded params into state
         state.params.dmin = loaded.dmin.copy()
         state.params.d_max = loaded.d_max
@@ -793,6 +801,7 @@ def create_app() -> Flask:
         state.params.gamma = loaded.gamma
         state.params.soft_clip = loaded.soft_clip
         state.params.tint = loaded.tint
+        state.tone_profile = result["tone_profile"]
         _auto_save(state)
         return jsonify(_params_to_dict(state.params, state.crop_rect))
 
@@ -1565,6 +1574,8 @@ def create_app() -> Flask:
                 if state.post_edit_sharpen:
                     post_edit["sharpen"] = state.post_edit_sharpen
                 sidecar_data["postEdit"] = post_edit
+            if state.tone_profile and state.tone_profile != "standard":
+                sidecar_data["toneProfile"] = state.tone_profile
             Path(sp).parent.mkdir(parents=True, exist_ok=True)
             with open(sp, "w") as f:
                 json.dump(sidecar_data, f, indent=2)

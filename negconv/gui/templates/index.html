@@ -125,19 +125,6 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     </div>
   </div>
 
-  <!-- Tone Profile -->
-  <div class="section">
-    <h2>Tone Profile</h2>
-    <div style="display:flex;gap:6px;align-items:center;">
-      <select id="tone-profile" style="flex:1;background:#333;border:1px solid #444;color:#ddd;padding:4px;border-radius:3px;font-size:0.85em;">
-        <option value="standard">Standard</option>
-        <option value="lab-warm">Lab Warm (Frontier)</option>
-        <option value="lab-neutral">Lab Neutral (Noritsu)</option>
-        <option value="cinematic">Cinematic</option>
-      </select>
-    </div>
-  </div>
-
   <!-- LUT -->
   <div class="section">
     <h2>Look LUT</h2>
@@ -197,6 +184,17 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
   <details class="section" id="edit-section">
     <summary><h2 style="display:inline;cursor:pointer;">Edit</h2></summary>
     <div style="margin-top:6px;">
+      <!-- Tone Profile -->
+      <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+        <span style="font-size:0.85em;color:#999;">Profile</span>
+        <select id="tone-profile" style="flex:1;background:#333;border:1px solid #444;color:#ddd;padding:4px;border-radius:3px;font-size:0.85em;">
+          <option value="standard">Standard</option>
+          <option value="lab-warm">Lab Warm (Frontier)</option>
+          <option value="lab-neutral">Lab Neutral (Noritsu)</option>
+          <option value="cinematic">Cinematic</option>
+        </select>
+      </div>
+
       <!-- Tint -->
       <label><span class="lbl" data-target="sl-tint" title="Green-magenta tint. Negative = greener, Positive = magenta. Range: -1.0 to +1.0. Alt+click to reset.">Tint (G↔M)</span> <input type="range" id="sl-tint" min="-1.0" max="1.0" step="0.01" value="0.0" data-default="0.0"> <input type="number" id="num-tint" min="-1.0" max="1.0" step="0.01" value="0.00"></label>
 
@@ -428,6 +426,66 @@ function resetImageState() {
   $("btn-crop").classList.remove("btn-active");
   $("btn-before-after").classList.remove("btn-active");
   img.style.cursor = "default";
+  // Reset post-edit UI state (H2: prevent stale curves carrying to new image)
+  resetPostEditUI();
+}
+
+function resetPostEditUI() {
+  // Reset curve editor to identity
+  curvePoints = {composite: [[0,0],[1,1]], r: [[0,0],[1,1]], g: [[0,0],[1,1]], b: [[0,0],[1,1]]};
+  drawCurve();
+  // Reset HSL sliders
+  HSL_SECTORS.forEach(s => {
+    $(`hsl-${s}-sat`).value = 0; $(`hsl-${s}-sat-num`).value = 0;
+    $(`hsl-${s}-lum`).value = 0; $(`hsl-${s}-lum-num`).value = 0;
+  });
+  // Reset sharpen sliders
+  $("sl-sharpen-amount").value = 0; $("num-sharpen-amount").value = 0;
+  $("sl-sharpen-radius").value = 1.0; $("num-sharpen-radius").value = "1.0";
+  $("sl-sharpen-threshold").value = 0; $("num-sharpen-threshold").value = 0;
+  // Reset tint
+  $("sl-tint").value = 0; $("num-tint").value = "0.00";
+  // Reset tone profile
+  $("tone-profile").value = "standard";
+}
+
+function restorePostEditUI(pe) {
+  // Tone profile
+  if (pe.tone_profile) $("tone-profile").value = pe.tone_profile;
+  // Tint
+  if (pe.tint !== undefined) {
+    $("sl-tint").value = pe.tint;
+    $("num-tint").value = parseFloat(pe.tint).toFixed(2);
+  }
+  // Curves
+  if (pe.curves) {
+    for (const [ch, pts] of Object.entries(pe.curves)) {
+      if (pts && pts.length >= 2) curvePoints[ch] = pts.map(p => [parseFloat(p[0]), parseFloat(p[1])]);
+    }
+    drawCurve();
+  }
+  // HSL
+  if (pe.hsl) {
+    for (const [sector, adj] of Object.entries(pe.hsl)) {
+      if (adj.saturation !== undefined) {
+        $(`hsl-${sector}-sat`).value = adj.saturation;
+        $(`hsl-${sector}-sat-num`).value = adj.saturation;
+      }
+      if (adj.luminance !== undefined) {
+        $(`hsl-${sector}-lum`).value = adj.luminance;
+        $(`hsl-${sector}-lum-num`).value = adj.luminance;
+      }
+    }
+  }
+  // Sharpen
+  if (pe.sharpen) {
+    $("sl-sharpen-amount").value = pe.sharpen.amount || 0;
+    $("num-sharpen-amount").value = pe.sharpen.amount || 0;
+    $("sl-sharpen-radius").value = pe.sharpen.radius || 1.0;
+    $("num-sharpen-radius").value = pe.sharpen.radius || 1.0;
+    $("sl-sharpen-threshold").value = pe.sharpen.threshold || 0;
+    $("num-sharpen-threshold").value = pe.sharpen.threshold || 0;
+  }
 }
 
 const $ = id => document.getElementById(id);
@@ -826,11 +884,9 @@ function applyLoadResponse(data) {
     [previewWidth, previewHeight] = [previewHeight, previewWidth];
   }
   updateUI(data.params);
-  // Restore tone profile from sidecar
+  // Restore post-edit UI state from server (H1: curves/HSL/sharpen/tone_profile)
   fetch("/api/post-edit").then(r => r.json()).then(pe => {
-    if (pe.tone_profile) {
-      $("tone-profile").value = pe.tone_profile;
-    }
+    restorePostEditUI(pe);
   }).catch(() => {});
   updateStatus();
   updateCropOverlay();
@@ -1392,7 +1448,9 @@ $("btn-load-lut").addEventListener("click", () => {
     setLoading(false);
     if (data.error) { alert(data.error); return; }
     $("lut-info").style.display = "block";
-    $("lut-info").textContent = "LUT: " + data.lut;
+    let lutText = "LUT: " + data.lut;
+    if ($("tone-profile").value !== "standard") lutText += " + Tone profile active";
+    $("lut-info").textContent = lutText;
     img.src = "/api/preview/result?" + Date.now();
     updateUI(data.params);
     flashStatus("Loaded LUT: " + data.lut);
@@ -1639,6 +1697,7 @@ document.addEventListener("keydown", (e) => {
     fetch("/api/redo", {method: "POST"}).then(r => r.json()).then(data => {
       if (data.error) { flashStatus(data.error); return; }
       updateUI(data.params);
+      fetch("/api/post-edit").then(r => r.json()).then(restorePostEditUI).catch(() => {});
       img.src = "/api/preview/result?" + Date.now();
     });
   } else if (e.ctrlKey && e.key === "z") {
@@ -1646,6 +1705,7 @@ document.addEventListener("keydown", (e) => {
     fetch("/api/undo", {method: "POST"}).then(r => r.json()).then(data => {
       if (data.error) { flashStatus(data.error); return; }
       updateUI(data.params);
+      fetch("/api/post-edit").then(r => r.json()).then(restorePostEditUI).catch(() => {});
       img.src = "/api/preview/result?" + Date.now();
     });
   } else if (e.ctrlKey && e.key === "e") {
@@ -1764,6 +1824,7 @@ function gatherPostEdits() {
       radius: parseFloat($("sl-sharpen-radius").value),
       threshold: parseFloat($("sl-sharpen-threshold").value),
     },
+    tone_profile: $("tone-profile").value,
   };
 }
 
@@ -1962,17 +2023,7 @@ $("btn-reset-edit").addEventListener("click", () => {
     setLoading(false);
     if (data.error) { alert(data.error); return; }
     // Reset local state
-    $("sl-tint").value = 0; $("num-tint").value = "0.00";
-    curvePoints = {composite: [[0,0],[1,1]], r: [[0,0],[1,1]], g: [[0,0],[1,1]], b: [[0,0],[1,1]]};
-    drawCurve();
-    HSL_SECTORS.forEach(s => {
-      $(`hsl-${s}-sat`).value = 0; $(`hsl-${s}-sat-num`).value = 0;
-      $(`hsl-${s}-lum`).value = 0; $(`hsl-${s}-lum-num`).value = 0;
-    });
-    $("sl-sharpen-amount").value = 0; $("num-sharpen-amount").value = 0;
-    $("sl-sharpen-radius").value = 1.0; $("num-sharpen-radius").value = "1.0";
-    $("sl-sharpen-threshold").value = 0; $("num-sharpen-threshold").value = 0;
-    $("tone-profile").value = "standard";
+    resetPostEditUI();
     img.src = "/api/preview/result?" + Date.now();
     flashStatus("Edits reset");
   })

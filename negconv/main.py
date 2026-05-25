@@ -74,9 +74,9 @@ def _build_parser() -> argparse.ArgumentParser:
                    default="standard",
                    help="Built-in tone profile (default: standard)")
 
-    # Sidecar directory
+    # Sidecar directory (GUI-only, accepted here for consistency)
     p.add_argument("--sidecar-dir", choices=["hidden", "legacy"], default="hidden",
-                   help="Sidecar location: hidden (.negconv/ subdir) or legacy (beside file)")
+                   help=argparse.SUPPRESS)
 
     # Black level override
     p.add_argument("--black-level", type=str, default=None, metavar="R,Gr,Gb,B",
@@ -180,7 +180,8 @@ def _apply_cli_overrides(params: NegconvParams, args: argparse.Namespace) -> Non
 def _resolve_params(args: argparse.Namespace, img: np.ndarray) -> NegconvParams:
     """Determine params from profile, load-params, preset, or auto-detect, then apply CLI overrides."""
     if args.profile:
-        params = load_profile(args.profile)
+        profile_data = load_profile(args.profile)
+        params = profile_data["params"]
     elif args.load_params:
         params = load_params(args.load_params)
     elif args.preset == "bw":
@@ -397,26 +398,17 @@ def main() -> None:
 
     else:
         # Single file mode
-        img, raw_input = read_image(str(input_path))
+        img, _ = read_image(str(input_path))
         params = _resolve_params(args, img)
 
         if args.save_params:
             save_params(params, args.save_params)
         if args.save_profile:
-            save_profile(args.save_profile, params)
+            save_profile(args.save_profile, params, tone_profile=args.tone_profile)
             print(f"  Profile saved: {args.save_profile}")
 
-        from .color import srgb_to_rec2020, rec2020_to_srgb
-        from .postproc import apply_post_edits
-
-        if not raw_input:
-            img = srgb_to_rec2020(img)
-        positive = invert(img, params)
-        positive = apply_post_edits(positive, tint=params.tint, sharpen=sharpen,
-                                    tone_profile=args.tone_profile)
-        positive = rec2020_to_srgb(positive)
-        positive = np.clip(positive, 0, None)
-        _write_output(str(output_path), positive, fmt, args.dtype, args.quality)
+        _process_single(str(input_path), str(output_path), params, args.dtype, fmt,
+                        args.quality, sharpen=sharpen, tone_profile=args.tone_profile)
 
         src_type = "RAW" if is_raw(str(input_path)) else "TIFF"
         print(f"negconv {__version__}: {args.input} ({src_type}) -> {args.output}")
