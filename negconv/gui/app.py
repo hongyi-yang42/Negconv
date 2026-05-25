@@ -767,6 +767,7 @@ def create_app() -> Flask:
         state.params.black = loaded.black
         state.params.gamma = loaded.gamma
         state.params.soft_clip = loaded.soft_clip
+        state.params.tint = loaded.tint
         _auto_save(state)
         return jsonify(_params_to_dict(state.params, state.crop_rect))
 
@@ -1527,6 +1528,16 @@ def create_app() -> Flask:
             fp = state.directory_files[idx]
             sp = _sidecar_path(fp)
             sidecar_data = dict(snapshot)
+            # Include post-edit data so curves/HSL/sharpen transfer to matched files
+            if state.post_edit_curves or state.post_edit_hsl or state.post_edit_sharpen:
+                post_edit = {}
+                if state.post_edit_curves:
+                    post_edit["curves"] = state.post_edit_curves
+                if state.post_edit_hsl:
+                    post_edit["hsl"] = state.post_edit_hsl
+                if state.post_edit_sharpen:
+                    post_edit["sharpen"] = state.post_edit_sharpen
+                sidecar_data["postEdit"] = post_edit
             Path(sp).parent.mkdir(parents=True, exist_ok=True)
             with open(sp, "w") as f:
                 json.dump(sidecar_data, f, indent=2)

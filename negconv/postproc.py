@@ -128,16 +128,18 @@ def apply_curves(img: np.ndarray,
         pts = channels[c]
         if pts and len(pts) >= 2:
             lut = cubic_spline_lut(pts)
-            # Map pixel values [0,1] through LUT
-            idx = np.clip((result[:, :, c] * 255).astype(np.int32), 0, 255)
-            result[:, :, c] = lut[idx]
+            # Map pixel values [0,1] through LUT, preserve >1.0 highlights
+            over = result[:, :, c] > 1.0
+            idx = np.clip((np.clip(result[:, :, c], 0, 1) * 255).astype(np.int32), 0, 255)
+            result[:, :, c] = np.where(over, result[:, :, c], lut[idx])
 
     # Composite applied last (on top of per-channel)
     if composite_points and len(composite_points) >= 2:
         lut = cubic_spline_lut(composite_points)
         for c in range(3):
-            idx = np.clip((result[:, :, c] * 255).astype(np.int32), 0, 255)
-            result[:, :, c] = lut[idx]
+            over = result[:, :, c] > 1.0
+            idx = np.clip((np.clip(result[:, :, c], 0, 1) * 255).astype(np.int32), 0, 255)
+            result[:, :, c] = np.where(over, result[:, :, c], lut[idx])
 
     return result
 
@@ -321,8 +323,8 @@ def apply_sharpen(img: np.ndarray, amount: float = 0.0,
     sharpened_lum = lum + (amount / 100.0) * (lum - blurred) * edge_mask
 
     # Apply luminance change to all channels proportionally
-    safe_lum = np.maximum(lum, 1e-10)
-    scale = sharpened_lum / safe_lum
+    safe_lum = np.maximum(lum, 1e-6)
+    scale = np.clip(sharpened_lum / safe_lum, 0.5, 2.0)
 
     result = img.copy()
     for c in range(3):

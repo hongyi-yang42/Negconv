@@ -38,6 +38,7 @@ def save_profile(name: str, params: NegconvParams, notes: str = "") -> Path:
             "black": params.black,
             "gamma": params.gamma,
             "soft_clip": params.soft_clip,
+            "tint": params.tint,
         },
     }
     path = PROFILE_DIR / f"{_sanitize_filename(name)}.json"
@@ -63,6 +64,7 @@ def load_profile(name: str) -> NegconvParams:
         black=p["black"],
         gamma=p["gamma"],
         soft_clip=p["soft_clip"],
+        tint=p.get("tint", 0.0),
     )
 
 
