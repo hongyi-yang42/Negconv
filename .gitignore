@@ -5,11 +5,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-tests/fixtures/*.tif
-tests/fixtures/*.tif
-tests/fixtures/*.NEF
-tests/fixtures/*.CR2
-tests/fixtures/*.CR3
-tests/fixtures/*.ARW
-tests/fixtures/*.png
+# Test images (large RAW/TIF binaries — never commit)
+tests/fixtures/
+tests/bw_roll_test/
+# Sidecar files (legacy beside file + hidden .negconv/ subdir)
 *.negconv.json
+.negconv/
