@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -261,6 +262,186 @@ def auto_detect(img: np.ndarray, fallback_preset: str = "color",
         print(f"warning: auto-detect failed ({e}), using defaults", file=sys.stderr)
 
     return params
+
+
+@dataclass
+class RollProfile:
+    """Aggregated statistics for a roll/directory of film negatives."""
+
+    roll_dmin: np.ndarray          # per-channel median Dmin
+    roll_wb_high: np.ndarray       # per-channel median WB
+    roll_exposure_offset: float    # suggested exposure adjustment
+    num_frames: int                # number of frames analyzed
+    outlier_indices: list[int]     # frames where Dmin deviates >2σ
+    per_frame_dmin: list[list[float]] = field(default_factory=list)
+    per_frame_wb: list[list[float]] = field(default_factory=list)
+    per_frame_exposure: list[float] = field(default_factory=list)
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "roll_dmin": self.roll_dmin.tolist(),
+            "roll_wb_high": self.roll_wb_high.tolist(),
+            "roll_exposure_offset": self.roll_exposure_offset,
+            "num_frames": self.num_frames,
+            "outlier_indices": self.outlier_indices,
+            "per_frame_dmin": self.per_frame_dmin,
+            "per_frame_wb": self.per_frame_wb,
+            "per_frame_exposure": self.per_frame_exposure,
+        }
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2)
+
+    @classmethod
+    def load(cls, path: str | Path) -> RollProfile:
+        with open(path) as f:
+            data = json.load(f)
+        return cls(
+            roll_dmin=np.array(data["roll_dmin"], dtype=np.float32),
+            roll_wb_high=np.array(data["roll_wb_high"], dtype=np.float32),
+            roll_exposure_offset=data["roll_exposure_offset"],
+            num_frames=data["num_frames"],
+            outlier_indices=data["outlier_indices"],
+            per_frame_dmin=data.get("per_frame_dmin", []),
+            per_frame_wb=data.get("per_frame_wb", []),
+            per_frame_exposure=data.get("per_frame_exposure", []),
+        )
+
+
+def analyze_roll(
+    images: list[np.ndarray],
+    progress_callback: Callable[[int, int], None] | None = None,
+) -> RollProfile:
+    """Analyze a roll of film negatives and compute aggregate statistics.
+
+    Iterates all images, computes per-frame Dmin (border detect → percentile
+    fallback), auto_wb, and exposure stats. Aggregates into a RollProfile
+    with median-based roll baseline and >2σ outlier detection.
+
+    Args:
+        images: List of linear float32 images, shape (H, W, 3).
+        progress_callback: Optional callback(current, total) for progress.
+
+    Returns:
+        RollProfile with aggregated roll statistics.
+    """
+    from statistics import median
+
+    per_dmin: list[np.ndarray] = []
+    per_wb: list[np.ndarray] = []
+    per_exposure: list[float] = []
+
+    for i, img in enumerate(images):
+        if progress_callback:
+            progress_callback(i, len(images))
+
+        # Dmin: border detect → percentile fallback
+        dmin = detect_dmin(img)
+        if dmin is None:
+            dmin = detect_dmin_percentile(img)
+
+        dmax = detect_dmax(img, dmin)
+        wb = auto_wb(img, dmin, dmax)
+
+        per_dmin.append(dmin)
+        per_wb.append(wb)
+
+        # Exposure proxy: mean log-density of exposed areas
+        safe_dmin = np.maximum(dmin, np.float32(1e-6))
+        safe_img = np.maximum(img, np.float32(1e-10))
+        ld = -np.log10(safe_img / safe_dmin)
+        mask = (ld > 0.05) & (ld < dmax * 0.9)
+        if mask.any():
+            per_exposure.append(float(np.median(ld[mask])))
+        else:
+            per_exposure.append(0.0)
+
+    if progress_callback:
+        progress_callback(len(images), len(images))
+
+    # Aggregate: per-channel median across frames
+    dmin_stack = np.stack(per_dmin)
+    wb_stack = np.stack(per_wb)
+    roll_dmin = np.median(dmin_stack, axis=0).astype(np.float32)
+    roll_wb = np.median(wb_stack, axis=0).astype(np.float32)
+    roll_exp_offset = float(median(per_exposure)) - median(per_exposure)  # zero-centered
+
+    # Outlier detection: >2σ from roll median Dmin (using L2 norm)
+    dmin_dist = np.linalg.norm(dmin_stack - roll_dmin, axis=1)
+    dmin_mean = float(np.mean(dmin_dist))
+    dmin_std = float(np.std(dmin_dist))
+    outliers = []
+    if dmin_std > 1e-6:
+        outliers = [i for i, d in enumerate(dmin_dist) if d > 2 * dmin_std]
+
+    return RollProfile(
+        roll_dmin=roll_dmin,
+        roll_wb_high=roll_wb,
+        roll_exposure_offset=roll_exp_offset,
+        num_frames=len(images),
+        outlier_indices=outliers,
+        per_frame_dmin=[d.tolist() for d in per_dmin],
+        per_frame_wb=[w.tolist() for w in per_wb],
+        per_frame_exposure=per_exposure,
+    )
+
+
+def detect_border_region(img: np.ndarray, border_px: int = 0) -> dict[str, int]:
+    """Detect film frame boundary using gradient-based edge detection.
+
+    Finds the content rect (actual film frame) excluding sprocket holes,
+    holder edges, and unexposed border. Used for Dmin/WB sampling only —
+    does NOT affect export dimensions.
+
+    Args:
+        img: Linear float32 image, shape (H, W, 3).
+        border_px: Override: use this many pixels as border. 0 = auto-detect.
+
+    Returns:
+        dict with x, y, w, h of the content region.
+    """
+    h, w = img.shape[:2]
+
+    if border_px > 0:
+        return {"x": border_px, "y": border_px,
+                "w": w - 2 * border_px, "h": h - 2 * border_px}
+
+    # Compute luminance
+    lum = 0.2126 * img[:, :, 0] + 0.7152 * img[:, :, 1] + 0.0722 * img[:, :, 2]
+
+    # Gradient along each axis (Sobel-like: central difference)
+    grad_y = np.zeros_like(lum)
+    grad_x = np.zeros_like(lum)
+    if h > 2:
+        grad_y[1:-1, :] = np.abs(lum[2:, :] - lum[:-2, :])
+    if w > 2:
+        grad_x[:, 1:-1] = np.abs(lum[:, 2:] - lum[:, :-2])
+
+    # Average gradient per row/col
+    row_grad = np.mean(grad_x, axis=1)
+    col_grad = np.mean(grad_y, axis=0)
+
+    # Find edges: first significant gradient peak from each side
+    def _find_edge(profile: np.ndarray, threshold_factor: float = 0.3) -> int:
+        if len(profile) < 4:
+            return 0
+        threshold = threshold_factor * np.max(profile)
+        above = np.where(profile > threshold)[0]
+        return int(above[0]) if len(above) > 0 else 0
+
+    top = _find_edge(row_grad)
+    bottom = h - _find_edge(row_grad[::-1])
+    left = _find_edge(col_grad)
+    right = w - _find_edge(col_grad[::-1])
+
+    # Clamp: content rect must be at least 10px
+    if right - left < 10:
+        left, right = 0, w
+    if bottom - top < 10:
+        top, bottom = 0, h
+
+    return {"x": left, "y": top, "w": right - left, "h": bottom - top}
 
 
 def save_params(params: NegconvParams, path: str | Path) -> None:

@@ -213,8 +213,28 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <div style="margin-top:6px;">
       <label style="font-size:0.85em;margin-bottom:6px;"><input type="checkbox" id="chk-highlight"> Highlight recovery</label>
       <div style="font-size:0.8em;color:#888;">Black level: <span id="black-level-info">—</span></div>
+      <div style="margin-top:6px;">
+        <label style="font-size:0.85em;">Border buffer: <span id="border-buffer-val">auto</span></label>
+        <input type="range" id="border-buffer" min="0" max="20" step="1" value="0" style="width:100%;">
+      </div>
     </div>
   </details>
+
+  <!-- Roll Analysis -->
+  <div class="section">
+    <h2>Roll Analysis</h2>
+    <div style="display:flex;gap:6px;">
+      <button class="btn" id="btn-roll-analyze" style="flex:1">Analyze Roll</button>
+      <button class="btn" id="btn-match" style="flex:1" title="Apply current params to all files">Match All</button>
+    </div>
+    <div id="roll-progress-wrap" style="display:none;margin-top:4px;">
+      <div style="background:#333;border-radius:3px;overflow:hidden;height:6px;">
+        <div id="roll-progress-bar" style="background:#4a9;height:100%;width:0%;transition:width 0.3s;"></div>
+      </div>
+      <div id="roll-progress-text" style="font-size:0.8em;color:#888;margin-top:2px;"></div>
+    </div>
+    <div id="roll-info" style="font-size:0.8em;color:#888;display:none;margin-top:4px;"></div>
+  </div>
 
   <!-- Toolbar -->
   <div style="display:flex;gap:6px;margin-top:auto;padding-top:8px;border-top:1px solid #333;">
@@ -1551,6 +1571,73 @@ function toggleShortcutOverlay() {
   shortcutOverlayVisible = !shortcutOverlayVisible;
   $("shortcut-overlay").classList.toggle("visible", shortcutOverlayVisible);
 }
+
+// ---- Roll Analysis ----
+$("btn-roll-analyze").addEventListener("click", () => {
+  $("roll-progress-wrap").style.display = "block";
+  $("roll-progress-text").textContent = "Starting...";
+  $("roll-progress-bar").style.width = "0%";
+  $("btn-roll-analyze").disabled = true;
+  fetch("/api/roll-analyze", {method: "POST"})
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) { alert(data.error); $("btn-roll-analyze").disabled = false; return; }
+    // Poll for progress
+    const pollId = setInterval(() => {
+      fetch("/api/roll-progress").then(r => r.json()).then(p => {
+        const pct = p.total > 0 ? Math.round(p.current / p.total * 100) : 0;
+        $("roll-progress-bar").style.width = pct + "%";
+        $("roll-progress-text").textContent = `${p.current}/${p.total} frames`;
+        if (p.done) {
+          clearInterval(pollId);
+          $("btn-roll-analyze").disabled = false;
+          if (p.error) { $("roll-progress-text").textContent = "Error: " + p.error; return; }
+          $("roll-progress-text").textContent = "Done";
+          // Fetch and display profile
+          fetch("/api/roll-profile").then(r => r.json()).then(profile => {
+            $("roll-info").style.display = "block";
+            $("roll-info").innerHTML =
+              `<b>Roll</b> ${profile.num_frames} frames` +
+              (profile.outlier_indices.length ? `, ${profile.outlier_indices.length} outliers` : "") +
+              `<br>Dmin: R=${profile.roll_dmin[0].toFixed(3)} G=${profile.roll_dmin[1].toFixed(3)} B=${profile.roll_dmin[2].toFixed(3)}` +
+              `<br>WB: R=${profile.roll_wb_high[0].toFixed(3)} G=${profile.roll_wb_high[1].toFixed(3)} B=${profile.roll_wb_high[2].toFixed(3)}`;
+          });
+        }
+      });
+    }, 500);
+  })
+  .catch(e => { $("btn-roll-analyze").disabled = false; alert("Roll analysis failed: " + e); });
+});
+
+// Match: apply current params to all files in directory
+$("btn-match").addEventListener("click", () => {
+  if (!currentFilename) { flashStatus("No image loaded"); return; }
+  const indices = Array.from({length: currentTotalFiles}, (_, i) => i);
+  if (indices.length < 2) { flashStatus("Need 2+ files"); return; }
+  if (!confirm(`Apply current params to all ${indices.length} files?`)) return;
+  fetch("/api/match-params", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({indices}),
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) { alert(data.error); return; }
+    flashStatus(`Matched ${data.count} files`);
+  })
+  .catch(e => alert("Match failed: " + e));
+});
+
+// Border buffer slider
+$("border-buffer").addEventListener("input", (e) => {
+  const v = parseInt(e.target.value);
+  $("border-buffer-val").textContent = v === 0 ? "auto" : v + "px";
+  fetch("/api/border-buffer", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({border_px: v}),
+  });
+});
 </script>
 
 <!-- Shortcut overlay -->

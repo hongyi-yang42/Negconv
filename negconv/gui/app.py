@@ -17,7 +17,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 import negconv
 
 from ..io import apply_orientation, extract_exif, is_raw, read_image, write_image, write_jpeg, write_heic, RAW_EXTENSIONS
-from ..params import NegconvParams, auto_detect, save_params, load_params, PARAM_CATEGORIES, carry_fields_for_categories
+from ..params import NegconvParams, auto_detect, save_params, load_params, PARAM_CATEGORIES, carry_fields_for_categories, RollProfile, detect_border_region
 from ..pipeline import invert
 from ..color import srgb_to_rec2020, rec2020_to_srgb, recover_highlights
 from ..profiles import save_profile, load_profile, list_profiles, delete_profile
@@ -1228,8 +1228,11 @@ def create_app() -> Flask:
     def api_thumb(index):
         if index < 0 or index >= len(state.directory_files):
             return "", 404
-        _ensure_thumb_window(index, state)
-        tp = _thumb_path(state.directory_files[index])
+        fp = state.directory_files[index]
+        tp = _thumb_path(fp)
+        if not tp.exists() and index not in _thumb_queued:
+            _thumb_queued.add(index)
+            _thumb_executor.submit(_generate_thumb, fp)
         if tp.exists():
             return send_file(str(tp), mimetype="image/jpeg")
         return "", 404
@@ -1359,6 +1362,109 @@ def create_app() -> Flask:
             if "pillow-heif" in str(e):
                 return jsonify({"error": "HEIC export requires pillow-heif: pip install pillow-heif"}), 400
             raise
+
+    # ---- Roll Analysis ----
+    _roll_progress: dict = {"current": 0, "total": 0, "done": False, "error": None}
+    _roll_profile: RollProfile | None = None
+
+    @app.route("/api/roll-analyze", methods=["POST"])
+    def api_roll_analyze():
+        nonlocal _roll_profile
+        if not state.directory_files:
+            return jsonify({"error": "No directory loaded"}), 400
+
+        files = state.directory_files
+        _roll_progress.update({"current": 0, "total": len(files), "done": False, "error": None})
+
+        def _worker():
+            from ..io import read_image
+            from ..params import analyze_roll as _analyze
+            nonlocal _roll_profile
+            try:
+                images = []
+                for fp in files:
+                    img, _ = read_image(fp)
+                    images.append(img)
+
+                def _progress(cur, tot):
+                    _roll_progress["current"] = cur
+                    _roll_progress["total"] = tot
+
+                _roll_profile = _analyze(images, progress_callback=_progress)
+
+                # Save to directory
+                roll_dir = Path(files[0]).parent / ".negconv"
+                roll_dir.mkdir(parents=True, exist_ok=True)
+                _roll_profile.save(roll_dir / "roll_profile.json")
+                _roll_progress["done"] = True
+            except Exception as e:
+                _roll_progress["error"] = str(e)
+                _roll_progress["done"] = True
+
+        import threading
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        return jsonify({"status": "started", "total": len(files)})
+
+    @app.route("/api/roll-progress")
+    def api_roll_progress():
+        return jsonify(_roll_progress)
+
+    @app.route("/api/roll-profile")
+    def api_roll_profile():
+        nonlocal _roll_profile
+        if _roll_profile is None:
+            # Try loading from directory
+            if state.directory_files:
+                rp_path = Path(state.directory_files[0]).parent / ".negconv" / "roll_profile.json"
+                if rp_path.is_file():
+                    _roll_profile = RollProfile.load(rp_path)
+        if _roll_profile is None:
+            return jsonify({"error": "No roll profile"}), 404
+        return jsonify({
+            "roll_dmin": _roll_profile.roll_dmin.tolist(),
+            "roll_wb_high": _roll_profile.roll_wb_high.tolist(),
+            "roll_exposure_offset": _roll_profile.roll_exposure_offset,
+            "num_frames": _roll_profile.num_frames,
+            "outlier_indices": _roll_profile.outlier_indices,
+        })
+
+    @app.route("/api/match-params", methods=["POST"])
+    def api_match_params():
+        """Apply current params to multiple files in the directory."""
+        data = request.get_json(force=True)
+        indices = data.get("indices", [])
+        if not indices:
+            return jsonify({"error": "No indices provided"}), 400
+        if not state.directory_files:
+            return jsonify({"error": "No directory loaded"}), 400
+
+        snapshot = _snapshot_params(state)
+        updated = []
+        for idx in indices:
+            if idx < 0 or idx >= len(state.directory_files):
+                continue
+            fp = state.directory_files[idx]
+            sp = _sidecar_path(fp)
+            sidecar_data = dict(snapshot)
+            Path(sp).parent.mkdir(parents=True, exist_ok=True)
+            with open(sp, "w") as f:
+                json.dump(sidecar_data, f, indent=2)
+            updated.append(idx)
+
+        return jsonify({"updated": updated, "count": len(updated)})
+
+    @app.route("/api/border-buffer", methods=["POST"])
+    def api_set_border_buffer():
+        data = request.get_json(force=True)
+        border_px = data.get("border_px", 0)
+        state.settings["border_buffer"] = border_px
+        _save_settings(state.settings)
+        return jsonify({"border_buffer": border_px})
+
+    @app.route("/api/border-buffer")
+    def api_get_border_buffer():
+        return jsonify({"border_buffer": state.settings.get("border_buffer", 0)})
 
     return app
 

@@ -9,7 +9,7 @@ import numpy as np
 
 from . import __version__
 from .io import is_raw, read_image, write_image, write_jpeg, write_heic
-from .params import NegconvParams, auto_detect, load_params, save_params
+from .params import NegconvParams, auto_detect, load_params, save_params, analyze_roll, RollProfile, detect_border_region
 from .pipeline import invert
 from .profiles import save_profile, load_profile, list_profiles as list_profiles_fn
 from .io import RAW_EXTENSIONS
@@ -91,6 +91,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="JPEG/HEIC quality 1-100 (default: 92)",
     )
 
+    # Roll analysis
+    p.add_argument(
+        "--roll-analyze", action="store_true",
+        help="Scan directory and compute roll-wide Dmin/WB baseline before processing",
+    )
+    p.add_argument(
+        "--roll-profile", type=str, default=None, metavar="JSON",
+        help="Save/load roll profile JSON (with --roll-analyze: save; otherwise: load)",
+    )
+
+    # Border buffer
+    p.add_argument(
+        "--border-buffer", type=str, default="auto",
+        help="Border buffer for Dmin/WB sampling: auto or N pixels (default: auto)",
+    )
+
     # GUI mode
     p.add_argument(
         "--gui", action="store_true",
@@ -153,7 +169,15 @@ def _resolve_params(args: argparse.Namespace, img: np.ndarray) -> NegconvParams:
     elif args.preset == "color":
         params = NegconvParams.color_film()
     else:
-        params = auto_detect(img, dmin_mode=args.dmin_mode)
+        # Apply border buffer: constrain image to content region for Dmin/WB sampling
+        border_px = 0
+        if hasattr(args, "border_buffer") and args.border_buffer != "auto":
+            border_px = int(args.border_buffer)
+        sampling_img = img
+        if border_px > 0:
+            rect = detect_border_region(img, border_px=border_px)
+            sampling_img = img[rect["y"]:rect["y"]+rect["h"], rect["x"]:rect["x"]+rect["w"]]
+        params = auto_detect(sampling_img, dmin_mode=args.dmin_mode)
 
     # --wb-mode manual or explicit WB overrides disable auto_wb result
     if args.wb_mode == "manual" or any(
@@ -259,9 +283,47 @@ def main() -> None:
 
         output_path.mkdir(parents=True, exist_ok=True)
 
+        # Roll analysis: compute roll-wide baseline before processing
+        roll_profile = None
+        if args.roll_analyze:
+            print(f"  Analyzing roll ({len(inputs)} frames)...", end="", flush=True)
+            images = []
+            for inp in inputs:
+                img, _ = read_image(inp)
+                images.append(img)
+
+            def _roll_progress(cur, tot):
+                pct = int(cur / tot * 100) if tot else 0
+                print(f"\r  Analyzing roll ({cur}/{tot}, {pct}%)...", end="", flush=True)
+
+            roll_profile = analyze_roll(images, progress_callback=_roll_progress)
+            print(f"\r  Roll analysis: {roll_profile.num_frames} frames, "
+                  f"{len(roll_profile.outlier_indices)} outliers")
+
+            if args.roll_profile:
+                roll_profile.save(args.roll_profile)
+                print(f"  Roll profile saved: {args.roll_profile}")
+            else:
+                rp_dir = Path(args.input) / ".negconv"
+                rp_dir.mkdir(parents=True, exist_ok=True)
+                roll_profile.save(rp_dir / "roll_profile.json")
+
+            # Use roll baseline as Dmin/WB
+            print(f"  Roll Dmin: R={roll_profile.roll_dmin[0]:.4f} "
+                  f"G={roll_profile.roll_dmin[1]:.4f} B={roll_profile.roll_dmin[2]:.4f}")
+
+        elif args.roll_profile:
+            roll_profile = RollProfile.load(args.roll_profile)
+            print(f"  Loaded roll profile: {roll_profile.num_frames} frames")
+
         # Read first image to resolve params (auto-detect needs pixel data)
         first_img, _ = read_image(inputs[0])
         params = _resolve_params(args, first_img)
+
+        # Override with roll baseline if available
+        if roll_profile:
+            params.dmin = roll_profile.roll_dmin.copy()
+            params.wb_high = roll_profile.roll_wb_high.copy()
 
         # Auto-save params for reproducibility
         params_file = output_path / "params.json"
