@@ -1148,10 +1148,8 @@ def create_app() -> Flask:
     @app.route("/api/browse")
     def api_browse():
         """List subdirectories and supported image files in a server-side path."""
-        import platform
-        req_path = request.args.get("path", "").strip()
+        req_path = os.path.expanduser(request.args.get("path", "").strip())
         if not req_path:
-            # Default: user home
             req_path = str(Path.home())
         p = Path(req_path).resolve()
         if not p.is_dir():

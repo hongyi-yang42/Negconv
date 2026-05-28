@@ -451,6 +451,10 @@ let straightenMode = false;
 let straightenPoints = []; // [{px, py}] in preview coords
 let rotateDebounce = null;
 let currentTotalFiles = 0;
+// Curve editor state (declared early — referenced by resetPostEditUI)
+let curveChannel = "composite";
+let curvePoints = {composite: [[0,0],[1,1]], r: [[0,0],[1,1]], g: [[0,0],[1,1]], b: [[0,0],[1,1]]};
+let curveDragging = -1;
 
 // Centralized state reset — single source of truth for clearing image-dependent state.
 // Called by applyLoadResponse (new image) and Clear button (no image).
@@ -2142,9 +2146,6 @@ sharpenPairs.forEach(pair => {
 });
 
 // ---- Curve editor ----
-let curveChannel = "composite";
-let curvePoints = {composite: [[0,0],[1,1]], r: [[0,0],[1,1]], g: [[0,0],[1,1]], b: [[0,0],[1,1]]};
-let curveDragging = -1;
 
 function drawCurve() {
   const canvas = $("curve-canvas");
