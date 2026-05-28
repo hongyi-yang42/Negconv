@@ -143,6 +143,7 @@ class GuiState:
     orientation: int = 0      # 0=normal, 1=90°CW, 2=180°, 3=270°CW
     flip_h: bool = False
     flip_v: bool = False
+    angle_deg: float = 0.0  # arbitrary CCW rotation (straighten)
     is_raw_input: bool = False  # True if source is RAW (already Rec.2020)
     black_level: list[int] = field(default_factory=lambda: [0, 0, 0, 0])
     directory_files: list[str] = field(default_factory=list)
@@ -184,8 +185,10 @@ _PIL_ROTATE = {1: 4, 2: 3, 3: 2}  # PIL: 4=ROTATE_270(=90°CW), 3=ROTATE_180, 2=
 
 
 def _orient_preview(jpeg_bytes: bytes, state: GuiState) -> bytes:
-    """Apply rotation then flip to preview JPEG bytes. Flip is relative to displayed orientation."""
-    if state.orientation == 0 and not state.flip_h and not state.flip_v:
+    """Apply 90° rotation, flip, and arbitrary rotation to preview JPEG bytes."""
+    needs_90 = state.orientation != 0 or state.flip_h or state.flip_v
+    needs_arb = state.angle_deg != 0.0
+    if not needs_90 and not needs_arb:
         return jpeg_bytes
     from PIL import Image as PILImage
     img = PILImage.open(io.BytesIO(jpeg_bytes))
@@ -195,6 +198,11 @@ def _orient_preview(jpeg_bytes: bytes, state: GuiState) -> bytes:
         img = img.transpose(PILImage.FLIP_LEFT_RIGHT)
     if state.flip_v:
         img = img.transpose(PILImage.FLIP_TOP_BOTTOM)
+    if needs_arb:
+        from .viewer import linear_to_srgb
+        dmin_srgb = linear_to_srgb(np.clip(state.params.dmin, 0, 1))
+        fill_rgb = tuple(int(np.clip(c * 255, 0, 255)) for c in dmin_srgb)
+        img = img.rotate(state.angle_deg, expand=True, fillcolor=fill_rgb)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=85)
     return buf.getvalue()
@@ -239,6 +247,8 @@ def _auto_save(state: GuiState) -> bool:
     data["orientation"] = state.orientation
     data["flip_h"] = state.flip_h
     data["flip_v"] = state.flip_v
+    if state.angle_deg != 0.0:
+        data["angle_deg"] = state.angle_deg
     # Post-edit params
     if state.post_edit_curves:
         data["postEdit"] = data.get("postEdit", {})
@@ -287,6 +297,7 @@ def _apply_sidecar(state: GuiState, data: dict) -> None:
     state.orientation = data.get("orientation", 0)
     state.flip_h = data.get("flip_h", False)
     state.flip_v = data.get("flip_v", False)
+    state.angle_deg = data.get("angle_deg", 0.0)
     if "tint" in data:
         p.tint = float(data["tint"])
     post_edit = data.get("postEdit", {})
@@ -435,6 +446,7 @@ def _load_file(state: GuiState, path: str) -> bool:
     state.orientation = 0
     state.flip_h = False
     state.flip_v = False
+    state.angle_deg = 0.0
     state.history.clear()
     state.post_edit_curves = None
     state.post_edit_hsl = None
@@ -556,6 +568,7 @@ def _snapshot_carry(state: GuiState) -> dict:
         "orientation": state.orientation,
         "flip_h": state.flip_h,
         "flip_v": state.flip_v,
+        "angle_deg": state.angle_deg,
         "tone_profile": state.tone_profile,
     }
 
@@ -563,7 +576,7 @@ def _snapshot_carry(state: GuiState) -> dict:
 def _apply_carry(state: GuiState, snapshot: dict, categories: dict) -> None:
     """Apply carried fields from snapshot to state, using enabled categories."""
     enabled_fields = carry_fields_for_categories(categories)
-    geo_fields = {"crop_rect", "orientation", "flip_h", "flip_v"}
+    geo_fields = {"crop_rect", "orientation", "flip_h", "flip_v", "angle_deg"}
 
     sp = snapshot["params"]
     for fname in enabled_fields:
@@ -581,6 +594,8 @@ def _apply_carry(state: GuiState, snapshot: dict, categories: dict) -> None:
         state.flip_h = snapshot["flip_h"]
     if "flip_v" in enabled_fields:
         state.flip_v = snapshot["flip_v"]
+    if "angle_deg" in enabled_fields:
+        state.angle_deg = snapshot.get("angle_deg", 0.0)
     # Carry tone_profile as part of "tone" category
     if enabled_fields.intersection({"exposure", "gamma", "black", "soft_clip", "offset", "tint"}):
         state.tone_profile = snapshot.get("tone_profile", "standard")
@@ -648,6 +663,7 @@ def create_app() -> Flask:
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
+            "angle_deg": state.angle_deg,
             "current_index": state.current_index,
             "total_files": len(state.directory_files),
         }
@@ -763,6 +779,7 @@ def create_app() -> Flask:
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
+            "angle_deg": state.angle_deg,
         })
 
     # ---- Profile endpoints ----
@@ -899,6 +916,7 @@ def create_app() -> Flask:
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
+            "angle_deg": state.angle_deg,
         })
 
     @app.route("/api/version")
@@ -1002,6 +1020,7 @@ def create_app() -> Flask:
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
+            "angle_deg": state.angle_deg,
             "preview": preview_url,
             "auto_saved": _auto_save(state),
         })
@@ -1018,6 +1037,44 @@ def create_app() -> Flask:
             state.flip_v = not state.flip_v
         preview_url = "/api/preview/result" if state.result_preview else "/api/preview/orig"
         return jsonify({
+            "orientation": state.orientation,
+            "flip_h": state.flip_h,
+            "flip_v": state.flip_v,
+            "angle_deg": state.angle_deg,
+            "preview": preview_url,
+            "auto_saved": _auto_save(state),
+        })
+
+    @app.route("/api/straighten", methods=["POST"])
+    def api_straighten():
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+        data = request.get_json(force=True)
+        x1, y1 = data.get("x1", 0), data.get("y1", 0)
+        x2, y2 = data.get("x2", 0), data.get("y2", 0)
+        from ..geometry import compute_straighten_angle
+        correction = compute_straighten_angle(x1, y1, x2, y2)
+        state.angle_deg = max(-15.0, min(15.0, round(state.angle_deg + correction, 2)))
+        preview_url = "/api/preview/result" if state.result_preview else "/api/preview/orig"
+        return jsonify({
+            "angle_deg": state.angle_deg,
+            "orientation": state.orientation,
+            "flip_h": state.flip_h,
+            "flip_v": state.flip_v,
+            "preview": preview_url,
+            "auto_saved": _auto_save(state),
+        })
+
+    @app.route("/api/fine-rotate", methods=["POST"])
+    def api_fine_rotate():
+        if state.original_img is None:
+            return jsonify({"error": "No image loaded"}), 400
+        data = request.get_json(force=True)
+        angle = float(data.get("angle_deg", 0.0))
+        state.angle_deg = max(-15.0, min(15.0, round(angle, 2)))
+        preview_url = "/api/preview/result" if state.result_preview else "/api/preview/orig"
+        return jsonify({
+            "angle_deg": state.angle_deg,
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
@@ -1165,6 +1222,7 @@ def create_app() -> Flask:
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
+            "angle_deg": state.angle_deg,
         })
 
     @app.route("/api/carry-categories")
@@ -1230,6 +1288,7 @@ def create_app() -> Flask:
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
+            "angle_deg": state.angle_deg,
         })
 
     @app.route("/api/settings", methods=["GET"])
@@ -1378,6 +1437,7 @@ def create_app() -> Flask:
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
+            "angle_deg": state.angle_deg,
             "current_index": 0,
             "total_files": len(files),
         })
@@ -1428,6 +1488,12 @@ def create_app() -> Flask:
 
         # Apply orientation after crop, before write
         result = apply_orientation(result, state.orientation, state.flip_h, state.flip_v)
+
+        # Apply arbitrary rotation (straighten)
+        if state.angle_deg != 0.0:
+            from ..geometry import rotate_arbitrary
+            result = rotate_arbitrary(result, state.angle_deg,
+                                      fill_value=state.params.dmin)
 
         if fmt == "tiff32f":
             suffix, dtype, mime = ".tif", "float32", "image/tiff"

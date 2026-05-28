@@ -78,6 +78,12 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <div id="crop-border"></div>
   </div>
   <div id="crop-drawing"></div>
+  <div id="straighten-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;display:none;z-index:5;">
+    <svg style="position:absolute;top:0;left:0;width:100%;height:100%;">
+      <line id="straighten-line" x1="0" y1="0" x2="0" y2="0" stroke="#ff6" stroke-width="2" stroke-dasharray="8,4"/>
+    </svg>
+    <div id="straighten-angle-label" style="position:absolute;background:rgba(0,0,0,0.7);color:#ff6;font-size:12px;padding:2px 6px;border-radius:3px;display:none;"></div>
+  </div>
   <div id="histogram-wrap">
     <canvas id="histogram-canvas" width="240" height="120"></canvas>
     <div style="text-align:center;font-size:10px;color:#666;cursor:pointer;margin-top:2px;" id="hist-mode">Preview</div>
@@ -272,6 +278,21 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <div id="crop-info" style="font-size:0.8em;color:#888;display:none;"></div>
   </div>
 
+  <!-- Rotation -->
+  <div class="section">
+    <h2>Rotation</h2>
+    <div style="display:flex;gap:6px;">
+      <button class="btn" id="btn-straighten" title="Straighten by drawing a line (S)">Straighten</button>
+      <button class="btn" id="btn-clear-rotation" title="Reset rotation to 0°">Reset</button>
+    </div>
+    <label>
+      <span class="lbl" data-target="sl-rotate" title="Fine rotation angle (±10°). Use [ ] keys to nudge ±0.1°.">Angle</span>
+      <input type="range" id="sl-rotate" min="-10.0" max="10.0" step="0.1" value="0.0" data-default="0.0">
+      <input type="number" id="num-rotate" min="-15.0" max="15.0" step="0.1" value="0.0">
+    </label>
+    <div id="straighten-hint" style="font-size:0.8em;color:#888;display:none;">Click two points along the edge to straighten</div>
+  </div>
+
   <!-- Export -->
   <div class="section">
     <h2>Export</h2>
@@ -409,6 +430,10 @@ let debounceTimer = null;
 let clientOrientation = 0;
 let clientFlipH = false;
 let clientFlipV = false;
+let clientAngleDeg = 0.0;
+let straightenMode = false;
+let straightenPoints = []; // [{px, py}] in preview coords
+let rotateDebounce = null;
 let currentTotalFiles = 0;
 
 // Centralized state reset — single source of truth for clearing image-dependent state.
@@ -418,12 +443,14 @@ function resetImageState() {
   currentFilename = ""; currentDims = [0, 0];
   cropRectOrig = null;
   clientOrientation = 0; clientFlipH = false; clientFlipV = false;
+  clientAngleDeg = 0.0; straightenMode = false; straightenPoints = [];
   state_currentIndex = 0; currentTotalFiles = 0;
   currentSrcIsOriginal = false; lastResultSrc = ""; lastOrigSrc = "";
   pickingDmin = false; pickingWB = false; cropMode = false; cropDrawing = false;
   $("btn-pick").classList.remove("btn-active");
   $("btn-pick-wb").classList.remove("btn-active");
   $("btn-crop").classList.remove("btn-active");
+  $("btn-straighten").classList.remove("btn-active");
   $("btn-before-after").classList.remove("btn-active");
   img.style.cursor = "default";
   // Reset post-edit UI state (H2: prevent stale curves carrying to new image)
@@ -620,6 +647,7 @@ function applyOrientationFromResponse(data) {
   clientOrientation = data.orientation || 0;
   clientFlipH = data.flip_h || false;
   clientFlipV = data.flip_v || false;
+  if (data.angle_deg !== undefined) clientAngleDeg = data.angle_deg;
   const nowOdd = clientOrientation % 2 === 1;
   if (prevOdd !== nowOdd) {
     [previewWidth, previewHeight] = [previewHeight, previewWidth];
@@ -655,6 +683,84 @@ function doFlip(axis) {
 $("btn-rotate-cw").addEventListener("click", () => doRotate("cw"));
 $("btn-rotate-ccw").addEventListener("click", () => doRotate("ccw"));
 $("btn-flip-h").addEventListener("click", () => doFlip("h"));
+
+// ---- Straighten / Fine rotation ----
+function doStraighten(px1, py1, px2, py2) {
+  fetch("/api/straighten", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({x1: px1, y1: py1, x2: px2, y2: py2}),
+  }).then(r => r.json()).then(data => {
+    if (data.error) { alert(data.error); return; }
+    clientAngleDeg = data.angle_deg || 0.0;
+    $("sl-rotate").value = Math.max(-10, Math.min(10, clientAngleDeg));
+    $("num-rotate").value = clientAngleDeg.toFixed(1);
+    img.src = (data.preview || "/api/preview/result") + "?" + Date.now();
+    if (data.auto_saved) flashStatus("Auto-saved");
+  }).catch(e => alert("Straighten failed: " + e));
+}
+
+function doFineRotate(angleDeg) {
+  fetch("/api/fine-rotate", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({angle_deg: angleDeg}),
+  }).then(r => r.json()).then(data => {
+    if (data.error) { alert(data.error); return; }
+    clientAngleDeg = data.angle_deg || 0.0;
+    $("sl-rotate").value = Math.max(-10, Math.min(10, clientAngleDeg));
+    $("num-rotate").value = clientAngleDeg.toFixed(1);
+    img.src = (data.preview || "/api/preview/result") + "?" + Date.now();
+    if (data.auto_saved) flashStatus("Auto-saved");
+  }).catch(e => alert("Rotation failed: " + e));
+}
+
+function hideStraightenOverlay() {
+  $("straighten-overlay").style.display = "none";
+  $("straighten-line").setAttribute("x1", 0);
+  $("straighten-line").setAttribute("y1", 0);
+  $("straighten-line").setAttribute("x2", 0);
+  $("straighten-line").setAttribute("y2", 0);
+  $("straighten-angle-label").style.display = "none";
+}
+
+$("btn-straighten").addEventListener("click", () => {
+  straightenMode = !straightenMode;
+  $("btn-straighten").classList.toggle("btn-active", straightenMode);
+  if (straightenMode) {
+    pickingDmin = false; $("btn-pick").classList.remove("btn-active");
+    pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
+    cropMode = false; $("btn-crop").classList.remove("btn-active");
+    straightenPoints = [];
+    $("straighten-hint").style.display = "block";
+    img.style.cursor = "crosshair";
+  } else {
+    $("straighten-hint").style.display = "none";
+    straightenPoints = [];
+    hideStraightenOverlay();
+    img.style.cursor = "default";
+  }
+});
+
+$("btn-clear-rotation").addEventListener("click", () => {
+  if (clientAngleDeg === 0.0) return;
+  doFineRotate(0.0);
+});
+
+// Rotation slider
+$("sl-rotate").addEventListener("input", (e) => {
+  const val = parseFloat(e.target.value);
+  $("num-rotate").value = val.toFixed(1);
+  clearTimeout(rotateDebounce);
+  rotateDebounce = setTimeout(() => doFineRotate(val), 200);
+});
+
+$("num-rotate").addEventListener("change", (e) => {
+  let val = parseFloat(e.target.value) || 0;
+  val = Math.max(-15.0, Math.min(15.0, val));
+  $("sl-rotate").value = Math.max(-10.0, Math.min(10.0, val));
+  doFineRotate(val);
+});
 
 // ---- Coord remapping (preview space ↔ original space) ----
 function previewToOriginalCoords(px, py) {
@@ -878,12 +984,16 @@ function applyLoadResponse(data) {
   clientOrientation = data.orientation || 0;
   clientFlipH = data.flip_h || false;
   clientFlipV = data.flip_v || false;
+  clientAngleDeg = data.angle_deg || 0.0;
   if (data.current_index !== undefined) state_currentIndex = data.current_index;
   if (data.total_files !== undefined) currentTotalFiles = data.total_files;
   if (clientOrientation % 2 === 1) {
     [previewWidth, previewHeight] = [previewHeight, previewWidth];
   }
   updateUI(data.params);
+  // Sync rotation slider
+  $("sl-rotate").value = Math.max(-10, Math.min(10, clientAngleDeg));
+  $("num-rotate").value = clientAngleDeg.toFixed(1);
   // Restore post-edit UI state from server (H1: curves/HSL/sharpen/tone_profile)
   fetch("/api/post-edit").then(r => r.json()).then(pe => {
     restorePostEditUI(pe);
@@ -1167,6 +1277,55 @@ $("btn-clear-crop").addEventListener("click", () => {
     if (data.auto_saved) flashStatus("Auto-saved");
   })
   .catch(e => { setLoading(false); alert("Clear crop failed: " + e); });
+});
+
+// Straighten click handler
+$("viewer").addEventListener("mousedown", (e) => {
+  if (!straightenMode || e.button !== 0) return;
+  if (img.style.display === "none") return;
+  const imgRect = img.getBoundingClientRect();
+  if (e.clientX < imgRect.left || e.clientX > imgRect.right ||
+      e.clientY < imgRect.top || e.clientY > imgRect.bottom) return;
+  const p = clientToPreview(e.clientX, e.clientY);
+  straightenPoints.push(p);
+  if (straightenPoints.length === 1) {
+    // First point — show overlay, start live line
+    $("straighten-overlay").style.display = "block";
+    $("straighten-line").setAttribute("x1", e.clientX - imgRect.left);
+    $("straighten-line").setAttribute("y1", e.clientY - imgRect.top);
+    $("straighten-line").setAttribute("x2", e.clientX - imgRect.left);
+    $("straighten-line").setAttribute("y2", e.clientY - imgRect.top);
+  } else if (straightenPoints.length >= 2) {
+    // Second point — compute angle and send
+    const p2 = straightenPoints[1];
+    doStraighten(straightenPoints[0].x, straightenPoints[0].y, p2.x, p2.y);
+    // Auto-exit straighten mode
+    straightenMode = false;
+    $("btn-straighten").classList.remove("btn-active");
+    $("straighten-hint").style.display = "none";
+    hideStraightenOverlay();
+    img.style.cursor = "default";
+  }
+  e.preventDefault();
+});
+
+// Straighten live line drawing
+$("viewer").addEventListener("mousemove", (e) => {
+  if (!straightenMode || straightenPoints.length !== 1) return;
+  const imgRect = img.getBoundingClientRect();
+  const lx = e.clientX - imgRect.left;
+  const ly = e.clientY - imgRect.top;
+  $("straighten-line").setAttribute("x2", lx);
+  $("straighten-line").setAttribute("y2", ly);
+  // Show angle label
+  const p1 = straightenPoints[0];
+  const p2 = clientToPreview(e.clientX, e.clientY);
+  const angle = Math.atan2(p2.y - p1.y, p2.x - p1.x) * 180 / Math.PI;
+  const label = $("straighten-angle-label");
+  label.style.display = "block";
+  label.style.left = (lx + 10) + "px";
+  label.style.top = (ly - 20) + "px";
+  label.textContent = angle.toFixed(1) + "°";
 });
 
 // Crop drawing via click+drag
@@ -1663,10 +1822,17 @@ document.addEventListener("keydown", (e) => {
     $("btn-crop").click();
   } else if (e.key === "d" || e.key === "D") {
     $("btn-redetect").click();
+  } else if (e.key === "s" || e.key === "S") {
+    $("btn-straighten").click();
+  } else if (e.key === "[") {
+    doFineRotate(Math.max(-15.0, clientAngleDeg - 0.1));
+  } else if (e.key === "]") {
+    doFineRotate(Math.min(15.0, clientAngleDeg + 0.1));
   } else if (e.key === "Escape") {
     if (pickingDmin) { $("btn-pick").click(); }
     if (pickingWB) { $("btn-pick-wb").click(); }
     if (cropMode) { $("btn-crop").click(); }
+    if (straightenMode) { $("btn-straighten").click(); }
   } else if (e.key === " ") {
     e.preventDefault();
     fitToWindow();
@@ -2076,6 +2242,8 @@ function pushPostEditWith(extra) {
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">R</td><td>Rotate CW</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">Shift+R</td><td>Rotate CCW</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">F</td><td>Flip horizontal</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">S</td><td>Straighten tool</td></tr>
+      <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">[ / ]</td><td>Nudge rotation &minus;0.1 / +0.1&deg;</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">&larr; / &rarr;</td><td>Prev / Next frame</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">1</td><td>Preset: Color (C-41)</td></tr>
       <tr><td style="padding:4px 8px;color:#2a6;font-weight:bold;">2</td><td>Preset: B&W</td></tr>
