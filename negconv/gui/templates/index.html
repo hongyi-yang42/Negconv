@@ -786,7 +786,7 @@ $("btn-straighten").addEventListener("click", () => {
   if (straightenMode) {
     pickingDmin = false; $("btn-pick").classList.remove("btn-active");
     pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
-    cropMode = false; $("btn-crop").classList.remove("btn-active");
+    if (cropMode) exitCropMode();
     straightenPoints = [];
     $("straighten-hint").style.display = "block";
     img.style.cursor = "crosshair";
@@ -1235,6 +1235,7 @@ $("btn-pick").addEventListener("click", () => {
   pickingDmin = !pickingDmin;
   if (pickingDmin) {
     pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
+    if (cropMode) exitCropMode();
     // Show original negative so user samples from the right image
     img.src = "/api/preview/orig?" + Date.now();
     currentSrcIsOriginal = true;
@@ -1250,7 +1251,7 @@ $("btn-pick").addEventListener("click", () => {
 // Eyedropper (WB)
 $("btn-pick-wb").addEventListener("click", () => {
   pickingWB = !pickingWB;
-  if (pickingWB) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); }
+  if (pickingWB) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); if (cropMode) exitCropMode(); }
   $("btn-pick-wb").classList.toggle("btn-active", pickingWB);
   img.style.cursor = (pickingDmin || pickingWB) ? "crosshair" : "default";
 });
@@ -1408,18 +1409,38 @@ function updateCropOverlay() {
 }
 
 // Crop mode toggle
+function exitCropMode() {
+  cropMode = false;
+  $("btn-crop").classList.remove("btn-active");
+  hasActiveCrop = false;
+  // Hide any crop overlay elements
+  $("mask-top").style.display = "none";
+  $("mask-bottom").style.display = "none";
+  $("mask-left").style.display = "none";
+  $("mask-right").style.display = "none";
+  $("crop-border").style.display = "none";
+  $("crop-info").style.display = "none";
+  const drawEl = $("crop-drawing");
+  drawEl.style.display = "none";
+  drawEl.style.width = "0";
+  drawEl.style.height = "0";
+  // Restore result preview (if inversion hasn't been done, server returns 404 — image stays)
+  img.src = "/api/preview/result?" + Date.now();
+  img.style.cursor = (pickingDmin || pickingWB) ? "crosshair" : "default";
+}
+
 $("btn-crop").addEventListener("click", () => {
-  cropMode = !cropMode;
-  $("btn-crop").classList.toggle("btn-active", cropMode);
-  if (cropMode) {
-    pickingDmin = false; $("btn-pick").classList.remove("btn-active");
-    pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
-    // Switch to original preview for correct coordinate mapping
-    img.src = "/api/preview/orig?" + Date.now();
-  } else {
-    hasActiveCrop = false;
-  }
-  img.style.cursor = cropMode ? "crosshair" : ((pickingDmin || pickingWB) ? "crosshair" : "default");
+  if (cropMode) { exitCropMode(); return; }
+  cropMode = true;
+  $("btn-crop").classList.add("btn-active");
+  pickingDmin = false; $("btn-pick").classList.remove("btn-active");
+  pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
+  straightenMode = false; $("btn-straighten").classList.remove("btn-active");
+  $("straighten-hint").style.display = "none";
+  hideStraightenOverlay();
+  // Switch to original preview for correct coordinate mapping
+  img.src = "/api/preview/orig?" + Date.now();
+  img.style.cursor = "crosshair";
 });
 
 // Clear crop
