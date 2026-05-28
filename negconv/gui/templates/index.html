@@ -448,10 +448,12 @@ let cropMode = false;
 let cropDrawing = false;
 let cropStartX = 0, cropStartY = 0;
 let cropRectOrig = null; // {"x","y","w","h"} in original coords, or null
+let hasActiveCrop = false; // true only while crop overlay should be visible
 let previewWidth = 0;
 let previewHeight = 0;
 let currentFilename = "";
-let currentDims = [0, 0];
+let currentDims = [0, 0]; // [height, width] of original unrotated image
+let rotatedDims = [0, 0]; // [height, width] of rotated full-res image
 let zoomLevel = 1;
 let panX = 0, panY = 0;
 let isPanning = false;
@@ -479,8 +481,9 @@ let lastOrigSrc = "";
 // Called by applyLoadResponse (new image) and Clear button (no image).
 function resetImageState() {
   previewWidth = 0; previewHeight = 0;
-  currentFilename = ""; currentDims = [0, 0];
+  currentFilename = ""; currentDims = [0, 0]; rotatedDims = [0, 0];
   cropRectOrig = null;
+  hasActiveCrop = false;
   clientOrientation = 0; clientFlipH = false; clientFlipV = false;
   clientAngleDeg = 0.0; straightenMode = false; straightenPoints = [];
   state_currentIndex = 0; currentTotalFiles = 0;
@@ -682,14 +685,20 @@ async function navigateDir(direction) {
 
 // ---- Rotate / Flip ----
 function applyOrientationFromResponse(data) {
-  const prevOdd = clientOrientation % 2 === 1;
   clientOrientation = data.orientation || 0;
   clientFlipH = data.flip_h || false;
   clientFlipV = data.flip_v || false;
   if (data.angle_deg !== undefined) clientAngleDeg = data.angle_deg;
-  const nowOdd = clientOrientation % 2 === 1;
-  if (prevOdd !== nowOdd) {
-    [previewWidth, previewHeight] = [previewHeight, previewWidth];
+  // Server reports rotated preview dimensions
+  if (data.preview_dims) {
+    previewWidth = data.preview_dims[0];
+    previewHeight = data.preview_dims[1];
+  }
+  if (data.rotated_dims) rotatedDims = data.rotated_dims;
+  // Rotation changes coordinate space — clear crop
+  if (data.crop_rect === null || data.crop_rect === undefined) {
+    cropRectOrig = null;
+    hasActiveCrop = false;
   }
   img.src = (data.preview || "/api/preview/result") + "?" + Date.now();
   fitToWindow();
@@ -734,7 +743,11 @@ function doStraighten(px1, py1, px2, py2) {
     clientAngleDeg = data.angle_deg || 0.0;
     $("sl-rotate").value = Math.max(-10, Math.min(10, clientAngleDeg));
     $("num-rotate").value = clientAngleDeg.toFixed(1);
+    if (data.preview_dims) { previewWidth = data.preview_dims[0]; previewHeight = data.preview_dims[1]; }
+    if (data.rotated_dims) rotatedDims = data.rotated_dims;
+    if (data.crop_rect === null) { cropRectOrig = null; hasActiveCrop = false; }
     img.src = (data.preview || "/api/preview/result") + "?" + Date.now();
+    fitToWindow();
     if (data.auto_saved) flashStatus("Auto-saved");
   }).catch(e => alert("Straighten failed: " + e));
 }
@@ -749,7 +762,11 @@ function doFineRotate(angleDeg) {
     clientAngleDeg = data.angle_deg || 0.0;
     $("sl-rotate").value = Math.max(-10, Math.min(10, clientAngleDeg));
     $("num-rotate").value = clientAngleDeg.toFixed(1);
+    if (data.preview_dims) { previewWidth = data.preview_dims[0]; previewHeight = data.preview_dims[1]; }
+    if (data.rotated_dims) rotatedDims = data.rotated_dims;
+    if (data.crop_rect === null) { cropRectOrig = null; hasActiveCrop = false; }
     img.src = (data.preview || "/api/preview/result") + "?" + Date.now();
+    fitToWindow();
     if (data.auto_saved) flashStatus("Auto-saved");
   }).catch(e => alert("Rotation failed: " + e));
 }
@@ -1013,12 +1030,14 @@ function applyLoadResponse(data) {
   resetImageState();
   img.src = (data.preview || "/api/preview/orig") + "?" + Date.now();
   img.style.display = "block";
+  // Server reports preview dims after rotation — use directly, no swap needed
   if (data.preview_dims) {
     previewWidth = data.preview_dims[0];
     previewHeight = data.preview_dims[1];
   }
   currentFilename = data.filename;
   currentDims = data.dims;
+  if (data.rotated_dims) rotatedDims = data.rotated_dims;
   cropRectOrig = data.crop_rect || null;
   clientOrientation = data.orientation || 0;
   clientFlipH = data.flip_h || false;
@@ -1026,9 +1045,6 @@ function applyLoadResponse(data) {
   clientAngleDeg = data.angle_deg || 0.0;
   if (data.current_index !== undefined) state_currentIndex = data.current_index;
   if (data.total_files !== undefined) currentTotalFiles = data.total_files;
-  if (clientOrientation % 2 === 1) {
-    [previewWidth, previewHeight] = [previewHeight, previewWidth];
-  }
   updateUI(data.params);
   // Sync rotation slider
   $("sl-rotate").value = Math.max(-10, Math.min(10, clientAngleDeg));
@@ -1348,6 +1364,7 @@ function clientToPreview(cx, cy) {
 
 // Position the 4 dark mask divs + border around crop rectangle (in viewer space)
 function updateCropOverlay() {
+  if (!hasActiveCrop) return;
   const maskTop = $("mask-top"), maskBot = $("mask-bottom");
   const maskLeft = $("mask-left"), maskRight = $("mask-right");
   const border = $("crop-border");
@@ -1363,7 +1380,7 @@ function updateCropOverlay() {
     return;
   }
 
-  // Convert original crop rect to preview coords (accounting for rotation/flip)
+  // Crop coords are in full-res rotated space; scale to preview
   const rect = img.getBoundingClientRect();
   const vRect = $("viewer").getBoundingClientRect();
   const vw = $("viewer").clientWidth;
@@ -1371,15 +1388,15 @@ function updateCropOverlay() {
   const scaleX = rect.width / previewWidth;
   const scaleY = rect.height / previewHeight;
 
-  // Map crop corners through originalToPreviewCoords
-  const tl = originalToPreviewCoords(cropRectOrig.x, cropRectOrig.y);
-  const br = originalToPreviewCoords(cropRectOrig.x + cropRectOrig.w, cropRectOrig.y + cropRectOrig.h);
-
-  // Viewer-relative coords (masks are position:absolute inside #viewer)
-  const cx = (rect.left - vRect.left) + Math.min(tl.x, br.x) * scaleX;
-  const cy = (rect.top - vRect.top) + Math.min(tl.y, br.y) * scaleY;
-  const cw = Math.abs(br.x - tl.x) * scaleX;
-  const ch = Math.abs(br.y - tl.y) * scaleY;
+  // Scale full-res crop coords to preview coords
+  const rw = rotatedDims[1] || previewWidth;
+  const rh = rotatedDims[0] || previewHeight;
+  const cropScaleX = previewWidth / rw;
+  const cropScaleY = previewHeight / rh;
+  const cx = (rect.left - vRect.left) + cropRectOrig.x * cropScaleX * scaleX;
+  const cy = (rect.top - vRect.top) + cropRectOrig.y * cropScaleY * scaleY;
+  const cw = cropRectOrig.w * cropScaleX * scaleX;
+  const ch = cropRectOrig.h * cropScaleY * scaleY;
 
   maskTop.style.cssText = `position:absolute;display:block;background:rgba(0,0,0,0.5);left:0;top:0;width:${vw}px;height:${cy}px;pointer-events:none;`;
   maskBot.style.cssText = `position:absolute;display:block;background:rgba(0,0,0,0.5);left:0;top:${cy+ch}px;width:${vw}px;height:${vh-cy-ch}px;pointer-events:none;`;
@@ -1399,6 +1416,8 @@ $("btn-crop").addEventListener("click", () => {
     pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
     // Switch to original preview for correct coordinate mapping
     img.src = "/api/preview/orig?" + Date.now();
+  } else {
+    hasActiveCrop = false;
   }
   img.style.cursor = cropMode ? "crosshair" : ((pickingDmin || pickingWB) ? "crosshair" : "default");
 });
@@ -1412,6 +1431,7 @@ $("btn-clear-crop").addEventListener("click", () => {
     setLoading(false);
     if (data.error) { alert(data.error); return; }
     cropRectOrig = null;
+    hasActiveCrop = false;
     const drawEl = $("crop-drawing");
     drawEl.style.display = "none";
     drawEl.style.width = "0";
@@ -1538,18 +1558,16 @@ window.addEventListener("mouseup", (e) => {
   p1.y = Math.max(0, Math.min(previewHeight - 1, p1.y));
   p2.x = Math.max(0, Math.min(previewWidth - 1, p2.x));
   p2.y = Math.max(0, Math.min(previewHeight - 1, p2.y));
-  const o1 = previewToOriginalCoords(p1.x, p1.y);
-  const o2 = previewToOriginalCoords(p2.x, p2.y);
 
-  // Rotation can "cross" corners — take min/max to form a valid rect
-  const oh = currentDims[0], ow = currentDims[1];
-  const cx = Math.max(0, Math.min(o1.x, o2.x));
-  const cy = Math.max(0, Math.min(o1.y, o2.y));
-  const cw = Math.min(ow, Math.max(o1.x, o2.x)) - cx;
-  const ch = Math.min(oh, Math.max(o1.y, o2.y)) - cy;
+  // Crop coords are in preview space — server scales to full-res
+  const cx = Math.min(p1.x, p2.x);
+  const cy = Math.min(p1.y, p2.y);
+  const cw = Math.abs(p2.x - p1.x);
+  const ch = Math.abs(p2.y - p1.y);
 
   if (cw < 10 || ch < 10) { flashStatus("Crop too small"); return; }
 
+  hasActiveCrop = true;
   setLoading(true);
   fetch("/api/crop", {
     method: "POST",
@@ -1559,8 +1577,14 @@ window.addEventListener("mouseup", (e) => {
   .then(r => r.json())
   .then(data => {
     setLoading(false);
-    if (data.error) { alert(data.error); return; }
+    if (data.error) { alert(data.error); hasActiveCrop = false; return; }
     cropRectOrig = data.crop_rect;
+    hasActiveCrop = false;
+    // Update preview dims (may change due to crop)
+    if (data.preview_dims) {
+      previewWidth = data.preview_dims[0];
+      previewHeight = data.preview_dims[1];
+    }
     // Auto-exit crop mode after successful crop
     cropMode = false;
     $("btn-crop").classList.remove("btn-active");

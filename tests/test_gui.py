@@ -667,22 +667,31 @@ class TestRotateFlip:
                 os.unlink(sidecar)
 
     def test_crop_after_rotate(self):
-        """Crop in original space + rotate CW exports correctly."""
+        """Rotate CW then crop in rotated space exports correctly."""
         app = create_app()
         app.config["TESTING"] = True
         client = app.test_client()
-        path = self._make_tiff(200, 100)
+        path = self._make_tiff(200, 100)  # H=200, W=100
         try:
             client.post("/api/load", json={"path": path})
             client.post("/api/invert")
-            resp = client.post("/api/crop", json={"x": 0, "y": 0, "w": 100, "h": 50})
-            assert resp.status_code == 200
+            # Rotate CW first: H=200,W=100 → H=100,W=200
             resp = client.post("/api/rotate", json={"action": "cw"})
+            assert resp.status_code == 200
+            # Get preview dims to compute crop coords
+            pd = resp.json.get("preview_dims", [])
+            assert len(pd) == 2
+            pw, ph = pd[0], pd[1]
+            # Crop top-left quarter in preview space
+            crop_w = pw // 2
+            crop_h = ph // 2
+            resp = client.post("/api/crop", json={"x": 0, "y": 0, "w": crop_w, "h": crop_h})
             assert resp.status_code == 200
             resp = client.post("/api/export", json={"format": "tiff16"})
             assert resp.status_code == 200
             arr = tifffile.imread(io.BytesIO(resp.data))
-            # Cropped 100x50 (WxH), rotated CW → 50x100 (WxH), shape=(100,50,3)
+            # Original: H=100, W=200. After CW rotation: H=200, W=100.
+            # Crop top-left quarter: H=100, W=50 → shape (100, 50, 3)
             assert arr.shape == (100, 50, 3), f"Expected (100,50,3), got {arr.shape}"
         finally:
             os.unlink(path)

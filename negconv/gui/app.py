@@ -138,7 +138,8 @@ class GuiState:
     orig_preview: bytes = b""
     result_preview: bytes = b""
     preview_dims: tuple[int, int] = (0, 0)  # (width, height) of preview image
-    crop_rect: dict | None = None  # {"x","y","w","h"} in original coords
+    rotated_dims: tuple[int, int] = (0, 0)  # (height, width) of full-res rotated image
+    crop_rect: dict | None = None  # {"x","y","w","h"} in rotated image coords
     source_exif: bytes | None = None
     orientation: int = 0      # 0=normal, 1=90°CW, 2=180°, 3=270°CW
     flip_h: bool = False
@@ -171,6 +172,22 @@ def _sample_patch(img: np.ndarray, orig_x: int, orig_y: int, patch: int = 5) -> 
     x1 = min(orig_x + half + 1, w)
     region = img[y0:y1, x0:x1, :]
     return np.median(region.reshape(-1, 3), axis=0).astype(np.float32)
+
+
+def _update_rotated_dims(state: GuiState) -> None:
+    """Compute the full-res dimensions after orientation + arbitrary rotation."""
+    if state.original_img is None:
+        state.rotated_dims = (0, 0)
+        return
+    h, w = state.original_img.shape[:2]
+    # Apply orientation swap
+    if state.orientation % 2 == 1:
+        h, w = w, h
+    # Apply arbitrary rotation expansion
+    if state.angle_deg != 0.0:
+        from ..geometry import rotated_dimensions
+        h, w = rotated_dimensions(h, w, state.angle_deg)
+    state.rotated_dims = (h, w)
 
 
 def _get_pipeline_input(state: GuiState) -> np.ndarray:
@@ -465,6 +482,9 @@ def _load_file(state: GuiState, path: str) -> bool:
     pil_preview = PILImage.open(io.BytesIO(state.orig_preview))
     state.preview_dims = (pil_preview.width, pil_preview.height)
 
+    # Compute rotated full-res dimensions
+    _update_rotated_dims(state)
+
     # Push initial state into undo history
     state.history.push(_snapshot_params(state))
 
@@ -474,19 +494,11 @@ def _load_file(state: GuiState, path: str) -> bool:
 def _run_pipeline(state: GuiState) -> None:
     """Run inversion pipeline and store result preview.
 
-    Pipeline runs in Rec.2020 working space. Result is converted back to
-    sRGB for preview and export (except TIFF-32f which stays in Rec.2020).
-
-    When a LUT is loaded, gamma/soft_clip are set to identity so stages 4+5
-    become no-ops, then the LUT is applied to the Stage 3 output.
-
-    Post-inversion edits (tint, curves, HSL, sharpen) are applied to the
-    cached pipeline output before sRGB conversion — they do NOT re-run
-    the Cineon inversion.
+    Pipeline: decode → invert → (rotate → crop → post-edit) → sRGB → preview.
+    Rotation and crop operate on the inverted result, then post-edit is applied
+    to the rotated+cropped region (WYSIWYG).
     """
-    from ..postproc import apply_post_edits
-
-    pipeline_input = _get_pipeline_input(state)
+    pipeline_input = state.original_img
 
     if state.highlight_recovery:
         pipeline_input = recover_highlights(pipeline_input)
@@ -506,9 +518,36 @@ def _run_pipeline(state: GuiState) -> None:
 
     state.result_rec2020 = result
 
-    # Apply post-inversion edits on cached pipeline output
+    _build_preview(state)
+
+
+def _build_preview(state: GuiState) -> None:
+    """Apply rotate → crop → post-edit → sRGB → preview from cached inversion."""
+    from ..postproc import apply_post_edits
+    from ..io import apply_orientation
+    from ..geometry import rotate_arbitrary
+
+    img = state.result_rec2020
+    if img is None:
+        return
+
+    # Rotate in Rec.2020 working space
+    img = apply_orientation(img, state.orientation, state.flip_h, state.flip_v)
+    if state.angle_deg != 0.0:
+        img = rotate_arbitrary(img, state.angle_deg,
+                               fill_value=state.params.dmin)
+
+    # Store rotated full-res dimensions (before crop)
+    state.rotated_dims = (img.shape[0], img.shape[1])
+
+    # Crop in post-rotation space
+    if state.crop_rect:
+        r = state.crop_rect
+        img = img[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]]
+
+    # Post-edit on the rotated+cropped region
     edited = apply_post_edits(
-        result,
+        img,
         tint=state.params.tint,
         curves=state.post_edit_curves,
         hsl=state.post_edit_hsl,
@@ -521,6 +560,11 @@ def _run_pipeline(state: GuiState) -> None:
     max_w = state.settings.get("preview_max_width", PREVIEW_MAX_WIDTH)
     quality = state.settings.get("preview_quality", 90)
     state.result_preview = make_preview(result_srgb, max_w, quality=quality)
+
+    # Update preview dims to reflect rotated dimensions
+    from PIL import Image as PILImage
+    pil = PILImage.open(io.BytesIO(state.result_preview))
+    state.preview_dims = (pil.width, pil.height)
 
 
 def _reapply_post_edits(state: GuiState) -> None:
@@ -528,25 +572,10 @@ def _reapply_post_edits(state: GuiState) -> None:
 
     Used when only post-edit params change — much faster than _run_pipeline.
     """
-    from ..postproc import apply_post_edits
-
     if state.result_rec2020 is None:
         return
 
-    edited = apply_post_edits(
-        state.result_rec2020,
-        tint=state.params.tint,
-        curves=state.post_edit_curves,
-        hsl=state.post_edit_hsl,
-        sharpen=state.post_edit_sharpen,
-        tone_profile=state.tone_profile,
-    )
-
-    result_srgb = rec2020_to_srgb(edited)
-    result_srgb = np.clip(result_srgb, 0, None)
-    max_w = state.settings.get("preview_max_width", PREVIEW_MAX_WIDTH)
-    quality = state.settings.get("preview_quality", 90)
-    state.result_preview = make_preview(result_srgb, max_w, quality=quality)
+    _build_preview(state)
 
 
 def _snapshot_carry(state: GuiState) -> dict:
@@ -603,7 +632,14 @@ def _apply_carry(state: GuiState, snapshot: dict, categories: dict) -> None:
 
 def _redetect_in_crop(state: GuiState) -> None:
     """Re-detect Dmin/Dmax within crop + 5% inset, update params, run pipeline."""
+    from ..io import apply_orientation
+    from ..geometry import rotate_arbitrary
+
+    # Apply rotation to get into the same coordinate space as crop
     img = state.original_img
+    img = apply_orientation(img, state.orientation, state.flip_h, state.flip_v)
+    if state.angle_deg != 0.0:
+        img = rotate_arbitrary(img, state.angle_deg, fill_value=state.params.dmin)
 
     if state.crop_rect:
         r = state.crop_rect
@@ -659,6 +695,7 @@ def create_app() -> Flask:
             "filename": Path(path).name,
             "dims": [h, w],
             "preview_dims": list(state.preview_dims),
+            "rotated_dims": list(state.rotated_dims),
             "sidecar_loaded": sidecar_loaded,
             "orientation": state.orientation,
             "flip_h": state.flip_h,
@@ -680,8 +717,7 @@ def create_app() -> Flask:
     def api_preview_result():
         if not state.result_preview:
             return "", 404
-        data = _orient_preview(state.result_preview, state)
-        return send_file(io.BytesIO(data), mimetype="image/jpeg")
+        return send_file(io.BytesIO(state.result_preview), mimetype="image/jpeg")
 
     @app.route("/api/invert", methods=["POST"])
     def api_invert():
@@ -775,6 +811,7 @@ def create_app() -> Flask:
             "filename": Path(state.file_path).name,
             "dims": [h, w],
             "preview_dims": list(state.preview_dims),
+            "rotated_dims": list(state.rotated_dims),
             "sidecar_loaded": False,
             "orientation": state.orientation,
             "flip_h": state.flip_h,
@@ -963,9 +1000,16 @@ def create_app() -> Flask:
             return jsonify({"error": "No image loaded"}), 400
 
         data = request.get_json(force=True)
+        # Scale from preview pixel coords to full-res rotated image coords
+        pw, ph = state.preview_dims
+        rh, rw = state.rotated_dims
+        sx = rw / pw if pw > 0 else 1.0
+        sy = rh / ph if ph > 0 else 1.0
         state.crop_rect = {
-            "x": int(data["x"]), "y": int(data["y"]),
-            "w": int(data["w"]), "h": int(data["h"]),
+            "x": int(round(data["x"] * sx)),
+            "y": int(round(data["y"] * sy)),
+            "w": int(round(data["w"] * sx)),
+            "h": int(round(data["h"] * sy)),
         }
 
         # Auto re-detect Dmin/Dmax within crop if setting enabled
@@ -980,6 +1024,8 @@ def create_app() -> Flask:
         return jsonify({
             "crop_rect": state.crop_rect,
             "preview": "/api/preview/result",
+            "preview_dims": list(state.preview_dims),
+            "rotated_dims": list(state.rotated_dims),
             "params": _params_to_dict(state.params, state.crop_rect),
             "auto_saved": _auto_save(state),
         })
@@ -1015,12 +1061,20 @@ def create_app() -> Flask:
             state.orientation = (state.orientation + 3) % 4
         elif action == "180":
             state.orientation = (state.orientation + 2) % 4
+        # Rotation changes coordinate space — clear crop
+        state.crop_rect = None
+        _update_rotated_dims(state)
+        if state.result_rec2020 is not None:
+            _build_preview(state)
         preview_url = "/api/preview/result" if state.result_preview else "/api/preview/orig"
         return jsonify({
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
             "angle_deg": state.angle_deg,
+            "preview_dims": list(state.preview_dims),
+            "rotated_dims": list(state.rotated_dims),
+            "crop_rect": None,
             "preview": preview_url,
             "auto_saved": _auto_save(state),
         })
@@ -1035,12 +1089,20 @@ def create_app() -> Flask:
             state.flip_h = not state.flip_h
         elif axis == "v":
             state.flip_v = not state.flip_v
+        # Flip changes coordinate space — clear crop
+        state.crop_rect = None
+        _update_rotated_dims(state)
+        if state.result_rec2020 is not None:
+            _build_preview(state)
         preview_url = "/api/preview/result" if state.result_preview else "/api/preview/orig"
         return jsonify({
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
             "angle_deg": state.angle_deg,
+            "preview_dims": list(state.preview_dims),
+            "rotated_dims": list(state.rotated_dims),
+            "crop_rect": None,
             "preview": preview_url,
             "auto_saved": _auto_save(state),
         })
@@ -1055,12 +1117,20 @@ def create_app() -> Flask:
         from ..geometry import compute_straighten_angle
         correction = compute_straighten_angle(x1, y1, x2, y2)
         state.angle_deg = max(-15.0, min(15.0, round(state.angle_deg + correction, 2)))
+        # Angle change invalidates crop
+        state.crop_rect = None
+        _update_rotated_dims(state)
+        if state.result_rec2020 is not None:
+            _build_preview(state)
         preview_url = "/api/preview/result" if state.result_preview else "/api/preview/orig"
         return jsonify({
             "angle_deg": state.angle_deg,
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
+            "preview_dims": list(state.preview_dims),
+            "rotated_dims": list(state.rotated_dims),
+            "crop_rect": None,
             "preview": preview_url,
             "auto_saved": _auto_save(state),
         })
@@ -1072,12 +1142,20 @@ def create_app() -> Flask:
         data = request.get_json(force=True)
         angle = float(data.get("angle_deg", 0.0))
         state.angle_deg = max(-15.0, min(15.0, round(angle, 2)))
+        # Angle change invalidates crop
+        state.crop_rect = None
+        _update_rotated_dims(state)
+        if state.result_rec2020 is not None:
+            _build_preview(state)
         preview_url = "/api/preview/result" if state.result_preview else "/api/preview/orig"
         return jsonify({
             "angle_deg": state.angle_deg,
             "orientation": state.orientation,
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
+            "preview_dims": list(state.preview_dims),
+            "rotated_dims": list(state.rotated_dims),
+            "crop_rect": None,
             "preview": preview_url,
             "auto_saved": _auto_save(state),
         })
@@ -1261,6 +1339,7 @@ def create_app() -> Flask:
             "filename": Path(new_path).name,
             "dims": [h, w],
             "preview_dims": list(state.preview_dims),
+            "rotated_dims": list(state.rotated_dims),
             "sidecar_loaded": sidecar_loaded,
             "current_index": state.current_index,
             "total_files": len(state.directory_files),
@@ -1327,6 +1406,7 @@ def create_app() -> Flask:
             "filename": Path(state.directory_files[target]).name,
             "dims": [h, w],
             "preview_dims": list(state.preview_dims),
+            "rotated_dims": list(state.rotated_dims),
             "sidecar_loaded": sidecar_loaded,
             "current_index": state.current_index,
             "total_files": len(state.directory_files),
@@ -1478,6 +1558,7 @@ def create_app() -> Flask:
             "filename": Path(files[0]).name,
             "dims": [h, w],
             "preview_dims": list(state.preview_dims),
+            "rotated_dims": list(state.rotated_dims),
             "sidecar_loaded": sidecar_loaded,
             "orientation": state.orientation,
             "flip_h": state.flip_h,
@@ -1506,15 +1587,27 @@ def create_app() -> Flask:
                 saved_soft_clip = state.params.soft_clip
                 state.params.gamma = 1.0
                 state.params.soft_clip = 1.0
-                result = invert(_get_pipeline_input(state), state.params)
+                result = invert(state.original_img, state.params)
                 state.params.gamma = saved_gamma
                 state.params.soft_clip = saved_soft_clip
                 result = np.clip(result, 0.0, 1.0)
                 result = apply_lut(result, state.lut_data)
             else:
-                result = invert(_get_pipeline_input(state), state.params)
+                result = invert(state.original_img, state.params)
         except Exception as e:
             return jsonify({"error": f"Inversion failed: {e}"}), 500
+
+        # Rotate → crop → post-edit
+        result = apply_orientation(result, state.orientation, state.flip_h, state.flip_v)
+
+        if state.angle_deg != 0.0:
+            from ..geometry import rotate_arbitrary
+            result = rotate_arbitrary(result, state.angle_deg,
+                                      fill_value=state.params.dmin)
+
+        if state.crop_rect:
+            r = state.crop_rect
+            result = result[r["y"]:r["y"] + r["h"], r["x"]:r["x"] + r["w"]]
 
         # Apply post-inversion edits
         from ..postproc import apply_post_edits
@@ -1533,15 +1626,6 @@ def create_app() -> Flask:
         else:
             result = rec2020_to_srgb(result)
             result = np.clip(result, 0, None)
-
-        # Apply orientation after crop, before write
-        result = apply_orientation(result, state.orientation, state.flip_h, state.flip_v)
-
-        # Apply arbitrary rotation (straighten)
-        if state.angle_deg != 0.0:
-            from ..geometry import rotate_arbitrary
-            result = rotate_arbitrary(result, state.angle_deg,
-                                      fill_value=state.params.dmin)
 
         # Export resize (downscale only)
         if resize and isinstance(resize, int) and resize > 0:
