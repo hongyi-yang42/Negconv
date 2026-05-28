@@ -1145,6 +1145,53 @@ def create_app() -> Flask:
                   and not _is_temp_path(r["path"])]
         return jsonify(recent)
 
+    @app.route("/api/browse")
+    def api_browse():
+        """List subdirectories and supported image files in a server-side path."""
+        import platform
+        req_path = request.args.get("path", "").strip()
+        if not req_path:
+            # Default: user home
+            req_path = str(Path.home())
+        p = Path(req_path).resolve()
+        if not p.is_dir():
+            return jsonify({"error": f"Not a directory: {req_path}", "path": req_path}), 400
+
+        dirs = []
+        files = []
+        try:
+            for entry in sorted(p.iterdir(), key=lambda e: e.name.lower()):
+                if entry.name.startswith("."):
+                    continue
+                if entry.is_dir():
+                    try:
+                        # Check readable
+                        list(entry.iterdir())
+                        dirs.append({"name": entry.name, "path": str(entry)})
+                    except PermissionError:
+                        pass
+                elif entry.is_file() and entry.suffix.lower() in SUPPORTED_EXTENSIONS:
+                    files.append({"name": entry.name, "path": str(entry)})
+        except PermissionError:
+            return jsonify({"error": f"Permission denied: {req_path}", "path": str(p)}), 403
+
+        # Build breadcrumb
+        parts = []
+        cur = p
+        while True:
+            parts.insert(0, {"name": cur.name or cur.as_posix(), "path": str(cur)})
+            if cur.parent == cur:
+                break
+            cur = cur.parent
+
+        return jsonify({
+            "path": str(p),
+            "breadcrumbs": parts,
+            "dirs": dirs,
+            "files": files,
+            "home": str(Path.home()),
+        })
+
     @app.route("/api/directory")
     def api_directory():
         files = []
