@@ -450,11 +450,16 @@ let clientAngleDeg = 0.0;
 let straightenMode = false;
 let straightenPoints = []; // [{px, py}] in preview coords
 let rotateDebounce = null;
+let state_currentIndex = 0;
 let currentTotalFiles = 0;
 // Curve editor state (declared early — referenced by resetPostEditUI)
 let curveChannel = "composite";
 let curvePoints = {composite: [[0,0],[1,1]], r: [[0,0],[1,1]], g: [[0,0],[1,1]], b: [[0,0],[1,1]]};
 let curveDragging = -1;
+const HSL_SECTORS = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "magenta"];
+let currentSrcIsOriginal = false;
+let lastResultSrc = "";
+let lastOrigSrc = "";
 
 // Centralized state reset — single source of truth for clearing image-dependent state.
 // Called by applyLoadResponse (new image) and Clear button (no image).
@@ -853,7 +858,7 @@ function updateStatus() {
   text += `  ${currentDims[0]}x${currentDims[1]}`;
   $("status").textContent = text;
 }
-let state_currentIndex = 0;
+
 
 // Sync slider → number input
 function syncSlToNum(slId, numId) {
@@ -1633,9 +1638,6 @@ doInvert = function() {
 };
 
 // ---- Before/After toggle ----
-let currentSrcIsOriginal = false;
-let lastResultSrc = "";
-let lastOrigSrc = "";
 
 function toggleBeforeAfter() {
   if (!currentFilename) return;
@@ -2271,7 +2273,6 @@ function gatherCurves() {
 }
 
 // ---- HSL sliders ----
-const HSL_SECTORS = ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "magenta"];
 HSL_SECTORS.forEach(sector => {
   ["sat", "lum"].forEach(type => {
     const slId = `hsl-${sector}-${type}`;
