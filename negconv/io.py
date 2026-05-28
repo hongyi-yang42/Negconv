@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import struct
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
@@ -303,3 +304,96 @@ def write_heic(path: str | Path, img: np.ndarray, quality: int = 92) -> None:
     rgb = _linear_to_srgb_uint8(img)
     pil = Image.fromarray(rgb, "RGB")
     pil.save(str(path), "HEIF", quality=quality, icc_profile=_get_srgb_icc())
+
+
+def write_xmp_sidecar(
+    output_path: str | Path,
+    params_dict: dict,
+    source_exif: bytes | None = None,
+    source_filename: str = "",
+) -> str:
+    """Write an XMP sidecar file alongside *output_path*.
+
+    Returns the path to the written XMP file.
+    """
+    from . import __version__
+
+    output_path = Path(output_path)
+    xmp_path = output_path.with_suffix(output_path.suffix + ".xmp")
+
+    # Root element
+    root = ET.Element("x:xmpmeta", {"xmlns:x": "adobe:ns:meta/"})
+
+    # RDF wrapper
+    rdf = ET.SubElement(root, "rdf:RDF", {
+        "xmlns:rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    })
+    desc = ET.SubElement(rdf, "rdf:Description", {
+        "rdf:about": "",
+        "xmlns:xmp": "http://ns.adobe.com/xap/1.0/",
+        "xmlns:dc": "http://purl.org/dc/elements/1.1/",
+        "xmlns:negconv": "http://negconv.org/pipeline/1.0/",
+    })
+
+    # Creator tool
+    desc.set("xmp:CreatorTool", f"Negconv v{__version__}")
+
+    # Source filename
+    if source_filename:
+        dc_source = ET.SubElement(desc, "dc:source")
+        dc_source.text = source_filename
+
+    # EXIF fields from source
+    if source_exif:
+        try:
+            from PIL.ExifTags import Base as ExifBase
+            src = Image.Exif()
+            src.load(source_exif)
+            tag_map = {
+                0x0110: "xmp:Model",        # Model
+                0x010f: "xmp:Manufacturer",  # Make
+                0x829a: "xmp:ExposureTime",  # ExposureTime
+                0x8827: "xmp:ISOSpeedRatings",  # ISOSpeedRatings
+                0x920a: "xmp:FocalLength",   # FocalLength
+            }
+            for tag, xmp_name in tag_map.items():
+                val = src.get(tag)
+                if val is not None:
+                    desc.set(xmp_name, str(val))
+            # DateTime
+            dt = src.get(0x0132)
+            if dt:
+                desc.set("xmp:CreateDate", str(dt))
+        except Exception:
+            pass
+
+    # Negconv pipeline params
+    for key in ("dmin", "d_max", "wb_high", "wb_low", "offset", "exposure",
+                "black", "gamma", "soft_clip", "tint", "tone_profile",
+                "angle_deg", "orientation"):
+        val = params_dict.get(key)
+        if val is not None:
+            if isinstance(val, (list, np.ndarray)):
+                val = "[" + ",".join(str(v) for v in val) + "]"
+            else:
+                val = str(val)
+            desc.set(f"negconv:{key}", val)
+
+    # Write with XML declaration
+    tree = ET.ElementTree(root)
+    ET.indent(tree, space="  ")
+    tree.write(str(xmp_path), xml_declaration=True, encoding="UTF-8")
+    return str(xmp_path)
+
+
+def resize_for_export(img: np.ndarray, max_dim: int) -> np.ndarray:
+    """Resize so longest edge = *max_dim* (downscale only). Returns float32."""
+    h, w = img.shape[:2]
+    longest = max(h, w)
+    if longest <= max_dim:
+        return img
+    scale = max_dim / longest
+    new_w, new_h = int(round(w * scale)), int(round(h * scale))
+    pil = Image.fromarray((np.clip(img, 0, 1) * 255).astype(np.uint8), "RGB")
+    pil = pil.resize((new_w, new_h), Image.LANCZOS)
+    return np.asarray(pil, dtype=np.float32) / 255.0

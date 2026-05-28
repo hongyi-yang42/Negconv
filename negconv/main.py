@@ -107,6 +107,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--quality", type=int, default=92,
         help="JPEG/HEIC quality 1-100 (default: 92)",
     )
+    p.add_argument(
+        "--resize", type=int, default=None, metavar="PIXELS",
+        help="Resize longest edge to PIXELS (downscale only)",
+    )
+    p.add_argument(
+        "--output-sharpen", choices=["none", "screen", "print"], default="none",
+        help="Output sharpening preset (default: none)",
+    )
+    p.add_argument(
+        "--no-xmp", action="store_true",
+        help="Suppress XMP sidecar write on export",
+    )
 
     # Roll analysis
     p.add_argument(
@@ -238,10 +250,13 @@ def _process_single(
     fmt: str = "tiff", quality: int = 92,
     sharpen: dict | None = None,
     tone_profile: str = "standard",
+    resize: int | None = None,
+    output_sharpen: str = "none",
+    write_xmp: bool = True,
 ) -> None:
     """Read, convert to Rec.2020, invert, apply post-edits, write."""
     from .color import srgb_to_rec2020, rec2020_to_srgb
-    from .postproc import apply_post_edits
+    from .postproc import apply_post_edits, apply_sharpen
 
     img, raw_input = read_image(input_path)
     if not raw_input:
@@ -254,7 +269,36 @@ def _process_single(
 
     positive = rec2020_to_srgb(positive)
     positive = np.clip(positive, 0, None)
+
+    # Export resize
+    if resize and resize > 0:
+        from .io import resize_for_export
+        positive = resize_for_export(positive, resize)
+
+    # Output sharpening
+    if output_sharpen in ("screen", "print"):
+        presets = {"screen": (40, 0.8, 0.0), "print": (80, 1.2, 2.0)}
+        amt, rad, thr = presets[output_sharpen]
+        positive = apply_sharpen(positive, amount=amt, radius=rad, threshold=thr)
+
     _write_output(output_path, positive, fmt, dtype, quality)
+
+    # XMP sidecar
+    if write_xmp:
+        from .io import write_xmp_sidecar
+        from .gui.app import _params_to_dict
+        params_dict = {
+            "dmin": params.dmin.tolist(), "d_max": params.d_max,
+            "wb_high": params.wb_high.tolist(), "wb_low": params.wb_low.tolist(),
+            "exposure": params.exposure, "gamma": params.gamma,
+            "black": params.black, "soft_clip": params.soft_clip,
+            "offset": params.offset, "tint": params.tint,
+            "tone_profile": tone_profile,
+        }
+        exif_bytes = extract_exif(input_path)
+        write_xmp_sidecar(output_path, params_dict,
+                           source_exif=exif_bytes,
+                           source_filename=Path(input_path).name)
 
     src_type = "RAW" if is_raw(input_path) else "TIFF"
     print(f"  {Path(input_path).name} ({src_type}) -> {Path(output_path).name}")
@@ -390,7 +434,9 @@ def main() -> None:
             print(f"  Processing {i}/{len(inputs)}: {Path(inp).name}", end="")
             try:
                 _process_single(inp, str(out_file), params, args.dtype, fmt, args.quality,
-                                sharpen=sharpen, tone_profile=args.tone_profile)
+                                sharpen=sharpen, tone_profile=args.tone_profile,
+                                resize=args.resize, output_sharpen=args.output_sharpen,
+                                write_xmp=not args.no_xmp)
             except Exception as e:
                 print(f" ERROR: {e}", file=sys.stderr)
 
@@ -408,7 +454,9 @@ def main() -> None:
             print(f"  Profile saved: {args.save_profile}")
 
         _process_single(str(input_path), str(output_path), params, args.dtype, fmt,
-                        args.quality, sharpen=sharpen, tone_profile=args.tone_profile)
+                        args.quality, sharpen=sharpen, tone_profile=args.tone_profile,
+                        resize=args.resize, output_sharpen=args.output_sharpen,
+                        write_xmp=not args.no_xmp)
 
         src_type = "RAW" if is_raw(str(input_path)) else "TIFF"
         print(f"negconv {__version__}: {args.input} ({src_type}) -> {args.output}")

@@ -1495,6 +1495,9 @@ def create_app() -> Flask:
         data = request.get_json(force=True) if request.is_json else {}
         fmt = data.get("format", "tiff16")
         quality = int(data.get("quality", 92))
+        resize = data.get("resize")  # int or null
+        output_sharpen = data.get("output_sharpen", "none")  # none/screen/print
+        write_xmp = data.get("write_xmp", False)
         stem = Path(state.file_path).stem if state.file_path else "output"
 
         try:
@@ -1540,6 +1543,18 @@ def create_app() -> Flask:
             result = rotate_arbitrary(result, state.angle_deg,
                                       fill_value=state.params.dmin)
 
+        # Export resize (downscale only)
+        if resize and isinstance(resize, int) and resize > 0:
+            from ..io import resize_for_export
+            result = resize_for_export(result, resize)
+
+        # Output sharpening (separate from edit sharpening)
+        if output_sharpen in ("screen", "print"):
+            from ..postproc import apply_sharpen
+            presets = {"screen": (40, 0.8, 0.0), "print": (80, 1.2, 2.0)}
+            amt, rad, thr = presets[output_sharpen]
+            result = apply_sharpen(result, amount=amt, radius=rad, threshold=thr)
+
         if fmt == "tiff32f":
             suffix, dtype, mime = ".tif", "float32", "image/tiff"
             filename = f"{stem}_negconv.tif"
@@ -1579,6 +1594,29 @@ def create_app() -> Flask:
                 if pil.info.get("icc_profile"):
                     save_kw["icc_profile"] = pil.info["icc_profile"]
                 pil.save(tmp.name, pil.format, **save_kw)
+
+            # Write XMP sidecar (zip both files for GUI download)
+            if write_xmp:
+                from ..io import write_xmp_sidecar
+                params_dict = _params_to_dict(state.params, state.crop_rect)
+                params_dict["angle_deg"] = state.angle_deg
+                params_dict["orientation"] = state.orientation
+                src_name = Path(state.file_path).name if state.file_path else ""
+                xmp_path = write_xmp_sidecar(tmp.name, params_dict,
+                                              source_exif=state.source_exif,
+                                              source_filename=src_name)
+                # Bundle into a zip
+                import zipfile
+                zip_tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+                with zipfile.ZipFile(zip_tmp.name, "w", zipfile.ZIP_DEFLATED) as zf:
+                    zf.write(tmp.name, filename)
+                    zf.write(xmp_path, filename + ".xmp")
+                return send_file(
+                    zip_tmp.name,
+                    as_attachment=True,
+                    download_name=stem + "_negconv.zip",
+                    mimetype="application/zip",
+                )
 
             return send_file(
                 tmp.name,
