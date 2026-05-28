@@ -1351,6 +1351,7 @@ function updateCropOverlay() {
 
   // Convert original crop rect to preview coords (accounting for rotation/flip)
   const rect = img.getBoundingClientRect();
+  const vRect = $("viewer").getBoundingClientRect();
   const vw = $("viewer").clientWidth;
   const vh = $("viewer").clientHeight;
   const scaleX = rect.width / previewWidth;
@@ -1360,8 +1361,9 @@ function updateCropOverlay() {
   const tl = originalToPreviewCoords(cropRectOrig.x, cropRectOrig.y);
   const br = originalToPreviewCoords(cropRectOrig.x + cropRectOrig.w, cropRectOrig.y + cropRectOrig.h);
 
-  const cx = rect.left + Math.min(tl.x, br.x) * scaleX;
-  const cy = rect.top + Math.min(tl.y, br.y) * scaleY;
+  // Viewer-relative coords (masks are position:absolute inside #viewer)
+  const cx = (rect.left - vRect.left) + Math.min(tl.x, br.x) * scaleX;
+  const cy = (rect.top - vRect.top) + Math.min(tl.y, br.y) * scaleY;
   const cw = Math.abs(br.x - tl.x) * scaleX;
   const ch = Math.abs(br.y - tl.y) * scaleY;
 
@@ -1419,11 +1421,15 @@ $("viewer").addEventListener("mousedown", (e) => {
   straightenPoints.push(p);
   if (straightenPoints.length === 1) {
     // First point — show overlay, start live line
+    // Use viewer-relative coords for SVG (which lives in #viewer)
+    const vRect = $("viewer").getBoundingClientRect();
+    const vx = e.clientX - vRect.left;
+    const vy = e.clientY - vRect.top;
     $("straighten-overlay").style.display = "block";
-    $("straighten-line").setAttribute("x1", e.clientX - imgRect.left);
-    $("straighten-line").setAttribute("y1", e.clientY - imgRect.top);
-    $("straighten-line").setAttribute("x2", e.clientX - imgRect.left);
-    $("straighten-line").setAttribute("y2", e.clientY - imgRect.top);
+    $("straighten-line").setAttribute("x1", vx);
+    $("straighten-line").setAttribute("y1", vy);
+    $("straighten-line").setAttribute("x2", vx);
+    $("straighten-line").setAttribute("y2", vy);
   } else if (straightenPoints.length >= 2) {
     // Second point — compute angle and send
     const p2 = straightenPoints[1];
@@ -1441,9 +1447,9 @@ $("viewer").addEventListener("mousedown", (e) => {
 // Straighten live line drawing
 $("viewer").addEventListener("mousemove", (e) => {
   if (!straightenMode || straightenPoints.length !== 1) return;
-  const imgRect = img.getBoundingClientRect();
-  const lx = e.clientX - imgRect.left;
-  const ly = e.clientY - imgRect.top;
+  const vRect = $("viewer").getBoundingClientRect();
+  const lx = e.clientX - vRect.left;
+  const ly = e.clientY - vRect.top;
   $("straighten-line").setAttribute("x2", lx);
   $("straighten-line").setAttribute("y2", ly);
   // Show angle label
@@ -1466,12 +1472,14 @@ $("viewer").addEventListener("mousedown", (e) => {
   if (e.clientX < imgRect.left || e.clientX > imgRect.right ||
       e.clientY < imgRect.top || e.clientY > imgRect.bottom) return;
   cropDrawing = true;
-  cropStartX = e.clientX;
-  cropStartY = e.clientY;
+  // Store viewer-relative coords (crop-drawing is position:absolute in #viewer)
+  const vRect = $("viewer").getBoundingClientRect();
+  cropStartX = e.clientX - vRect.left;
+  cropStartY = e.clientY - vRect.top;
   const drawEl = $("crop-drawing");
   drawEl.style.display = "block";
-  drawEl.style.left = e.clientX + "px";
-  drawEl.style.top = e.clientY + "px";
+  drawEl.style.left = cropStartX + "px";
+  drawEl.style.top = cropStartY + "px";
   drawEl.style.width = "0px";
   drawEl.style.height = "0px";
   e.preventDefault();
@@ -1479,11 +1487,14 @@ $("viewer").addEventListener("mousedown", (e) => {
 
 window.addEventListener("mousemove", (e) => {
   if (!cropDrawing) return;
+  const vRect = $("viewer").getBoundingClientRect();
+  const mx = e.clientX - vRect.left;
+  const my = e.clientY - vRect.top;
   const drawEl = $("crop-drawing");
-  const x = Math.min(cropStartX, e.clientX);
-  const y = Math.min(cropStartY, e.clientY);
-  const w = Math.abs(e.clientX - cropStartX);
-  const h = Math.abs(e.clientY - cropStartY);
+  const x = Math.min(cropStartX, mx);
+  const y = Math.min(cropStartY, my);
+  const w = Math.abs(mx - cropStartX);
+  const h = Math.abs(my - cropStartY);
   drawEl.style.left = x + "px";
   drawEl.style.top = y + "px";
   drawEl.style.width = w + "px";
@@ -1495,11 +1506,16 @@ window.addEventListener("mouseup", (e) => {
   cropDrawing = false;
   $("crop-drawing").style.display = "none";
 
-  // Convert drag corners to original image coords
-  const x1 = Math.min(cropStartX, e.clientX);
-  const y1 = Math.min(cropStartY, e.clientY);
-  const x2 = Math.max(cropStartX, e.clientX);
-  const y2 = Math.max(cropStartY, e.clientY);
+  // cropStartX/Y are viewer-relative; convert e.clientX/Y to match
+  const vRect = $("viewer").getBoundingClientRect();
+  const ex = e.clientX - vRect.left;
+  const ey = e.clientY - vRect.top;
+
+  // Convert drag corners to preview coords using viewport coords (clientToPreview uses getBoundingClientRect)
+  const x1 = Math.min(cropStartX + vRect.left, e.clientX);
+  const y1 = Math.min(cropStartY + vRect.top, e.clientY);
+  const x2 = Math.max(cropStartX + vRect.left, e.clientX);
+  const y2 = Math.max(cropStartY + vRect.top, e.clientY);
 
   const p1 = clientToPreview(x1, y1);
   const p2 = clientToPreview(x2, y2);
