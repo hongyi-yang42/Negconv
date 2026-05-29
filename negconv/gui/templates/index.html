@@ -537,7 +537,7 @@ function enterMode(mode) {
   switch (mode) {
     case "crop":
       $("btn-crop").classList.add("btn-active");
-      img.src = "/api/preview/orig?" + Date.now();
+      img.src = "/api/preview/result?" + Date.now();
       img.style.cursor = "crosshair";
       break;
     case "straighten":

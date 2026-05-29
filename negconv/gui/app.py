@@ -796,8 +796,8 @@ def create_app() -> Flask:
         lsp = _legacy_sidecar_path(state.file_path)
         if os.path.isfile(lsp):
             os.unlink(lsp)
-        # Reset highlight recovery to user's default setting
-        state.highlight_recovery = state.settings.get("highlight_recovery", False)
+        # Reset highlight recovery to the default setting value
+        state.highlight_recovery = DEFAULT_SETTINGS["highlight_recovery"]
         # Reload with fresh defaults
         try:
             _load_file(state, state.file_path)
