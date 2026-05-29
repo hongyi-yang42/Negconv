@@ -474,6 +474,7 @@ const HSL_SECTORS = ["red", "orange", "yellow", "green", "cyan", "blue", "purple
 let currentSrcIsOriginal = false;
 let lastResultSrc = "";
 let lastOrigSrc = "";
+let operationBusy = false; // prevents overlapping async operations
 
 // ---- Centralized mode management ----
 function hideStraightenOverlay() {
@@ -567,6 +568,7 @@ function enterMode(mode) {
 }
 
 function setMode(newMode) {
+  if (operationBusy && newMode !== "idle") return; // block mode entry during pending operations
   if (currentMode === newMode) {
     // Toggle off → go to idle
     exitMode(currentMode);
@@ -965,6 +967,7 @@ const sliderPairs = [
 
 // Loading indicator
 function setLoading(on) {
+  operationBusy = on;
   $("loading").classList.toggle("active", on);
 }
 
@@ -1152,6 +1155,17 @@ function applyLoadResponse(data) {
       ? `R:${bl[0]} Gr:${bl[1]} Gb:${bl[2]} B:${bl[3]} (RAW)`
       : `R:0 Gr:0 Gb:0 B:0 (TIFF)`;
   }).catch(() => {});
+  // Sync LUT and highlight recovery state from server
+  fetch("/api/lut").then(r => r.json()).then(d => {
+    if (d.lut) {
+      $("lut-path").value = d.lut;
+      $("lut-info").style.display = "block";
+      $("lut-info").textContent = "LUT: " + d.lut;
+    } else {
+      $("lut-path").value = "";
+      $("lut-info").style.display = "none";
+    }
+  }).catch(() => {});
 }
 
 // Load image
@@ -1331,6 +1345,7 @@ $("btn-pick-wb").addEventListener("click", () => {
 
 img.addEventListener("click", (e) => {
   if (currentMode !== "dmin_pick" && currentMode !== "wb_pick") return;
+  if (operationBusy) return;
   const rect = img.getBoundingClientRect();
   const scaleX = previewWidth / rect.width;
   const scaleY = previewHeight / rect.height;
@@ -1373,18 +1388,21 @@ img.addEventListener("click", (e) => {
     setLoading(false);
     if (data.error) { alert(data.error); return; }
     updateUI(data.params);
+    // Exit dmin_pick mode without triggering duplicate img.src from exitMode
+    currentMode = "idle";
+    $("btn-pick").classList.remove("btn-active");
+    img.style.cursor = "default";
     img.src = "/api/preview/result?" + Date.now();
     currentSrcIsOriginal = false;
     updateStatus();
     if (data.auto_saved) flashStatus("Auto-saved");
-    // Auto-exit eyedropper after one pick
-    setMode("idle");
   })
   .catch(e => { setLoading(false); alert("Pick failed: " + e); });
 });
 
 // Re-detect
 $("btn-redetect").addEventListener("click", () => {
+  if (operationBusy) return;
   setLoading(true);
   fetch("/api/re-detect", {method: "POST"})
   .then(r => r.json())
@@ -1647,7 +1665,9 @@ window.addEventListener("mouseup", (e) => {
       previewHeight = data.preview_dims[1];
     }
     // Auto-exit crop mode after successful crop
-    setMode("idle");
+    currentMode = "idle";
+    $("btn-crop").classList.remove("btn-active");
+    img.style.cursor = "default";
     img.src = "/api/preview/result?" + Date.now();
     updateUI(data.params);
     fitToWindow();
@@ -2000,6 +2020,9 @@ $("btn-reset").addEventListener("click", () => {
     setLoading(false);
     if (data.error) { alert(data.error); return; }
     applyLoadResponse(data);
+    // Sync reset-only state that applyLoadResponse doesn't cover
+    if (data.highlight_recovery !== undefined) $("chk-highlight").checked = data.highlight_recovery;
+    if (data.lut === null) { $("lut-path").value = ""; $("lut-info").style.display = "none"; }
     flashStatus("Reset to defaults");
     loadFilmstrip();
   })

@@ -469,6 +469,8 @@ def _load_file(state: GuiState, path: str) -> bool:
     state.post_edit_hsl = None
     state.post_edit_sharpen = None
     state.tone_profile = "standard"
+    state.lut_data = None
+    state.lut_path = ""
 
     sidecar_loaded = False
     sidecar = _load_sidecar(path)
@@ -794,6 +796,8 @@ def create_app() -> Flask:
         lsp = _legacy_sidecar_path(state.file_path)
         if os.path.isfile(lsp):
             os.unlink(lsp)
+        # Reset highlight recovery to user's default setting
+        state.highlight_recovery = state.settings.get("highlight_recovery", False)
         # Reload with fresh defaults
         try:
             _load_file(state, state.file_path)
@@ -817,6 +821,8 @@ def create_app() -> Flask:
             "flip_h": state.flip_h,
             "flip_v": state.flip_v,
             "angle_deg": state.angle_deg,
+            "highlight_recovery": state.highlight_recovery,
+            "lut": None,
         })
 
     # ---- Profile endpoints ----
