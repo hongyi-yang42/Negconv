@@ -442,12 +442,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 
 <script>
 // State
-let pickingDmin = false;
-let pickingWB = false;
-let cropMode = false;
+let currentMode = "idle"; // "idle" | "crop" | "straighten" | "dmin_pick" | "wb_pick" | "before_after"
 let cropDrawing = false;
 let cropStartX = 0, cropStartY = 0;
-let cropRectOrig = null; // {"x","y","w","h"} in original coords, or null
+let cropRectOrig = null; // {"x","y","w","h"} in rotated full-res coords, or null
 let hasActiveCrop = false; // true only while crop overlay should be visible
 let previewWidth = 0;
 let previewHeight = 0;
@@ -463,11 +461,11 @@ let clientOrientation = 0;
 let clientFlipH = false;
 let clientFlipV = false;
 let clientAngleDeg = 0.0;
-let straightenMode = false;
 let straightenPoints = []; // [{px, py}] in preview coords
 let rotateDebounce = null;
 let state_currentIndex = 0;
 let currentTotalFiles = 0;
+let requestGeneration = 0; // incremented on image navigation, guards async responses
 // Curve editor state (declared early — referenced by resetPostEditUI)
 let curveChannel = "composite";
 let curvePoints = {composite: [[0,0],[1,1]], r: [[0,0],[1,1]], g: [[0,0],[1,1]], b: [[0,0],[1,1]]};
@@ -477,6 +475,110 @@ let currentSrcIsOriginal = false;
 let lastResultSrc = "";
 let lastOrigSrc = "";
 
+// ---- Centralized mode management ----
+function hideStraightenOverlay() {
+  $("straighten-overlay").style.display = "none";
+  $("straighten-line").setAttribute("x1", 0);
+  $("straighten-line").setAttribute("y1", 0);
+  $("straighten-line").setAttribute("x2", 0);
+  $("straighten-line").setAttribute("y2", 0);
+  $("straighten-angle-label").style.display = "none";
+}
+
+function hideCropOverlays() {
+  $("mask-top").style.display = "none";
+  $("mask-bottom").style.display = "none";
+  $("mask-left").style.display = "none";
+  $("mask-right").style.display = "none";
+  $("crop-border").style.display = "none";
+  $("crop-info").style.display = "none";
+  const drawEl = $("crop-drawing");
+  drawEl.style.display = "none";
+  drawEl.style.width = "0";
+  drawEl.style.height = "0";
+}
+
+function exitMode(mode) {
+  switch (mode) {
+    case "crop":
+      cropDrawing = false;
+      hasActiveCrop = false;
+      hideCropOverlays();
+      $("btn-crop").classList.remove("btn-active");
+      img.src = "/api/preview/result?" + Date.now();
+      break;
+    case "straighten":
+      $("btn-straighten").classList.remove("btn-active");
+      $("straighten-hint").style.display = "none";
+      straightenPoints = [];
+      hideStraightenOverlay();
+      break;
+    case "dmin_pick":
+      $("btn-pick").classList.remove("btn-active");
+      img.src = "/api/preview/result?" + Date.now();
+      currentSrcIsOriginal = false;
+      break;
+    case "wb_pick":
+      $("btn-pick-wb").classList.remove("btn-active");
+      break;
+    case "before_after":
+      $("btn-before-after").classList.remove("btn-active");
+      if (currentSrcIsOriginal) {
+        if (lastResultSrc) img.src = lastResultSrc;
+        else img.src = "/api/preview/result?" + Date.now();
+        currentSrcIsOriginal = false;
+      }
+      break;
+  }
+}
+
+function enterMode(mode) {
+  switch (mode) {
+    case "crop":
+      $("btn-crop").classList.add("btn-active");
+      img.src = "/api/preview/orig?" + Date.now();
+      img.style.cursor = "crosshair";
+      break;
+    case "straighten":
+      $("btn-straighten").classList.add("btn-active");
+      straightenPoints = [];
+      $("straighten-hint").style.display = "block";
+      img.style.cursor = "crosshair";
+      break;
+    case "dmin_pick":
+      $("btn-pick").classList.add("btn-active");
+      img.src = "/api/preview/orig?" + Date.now();
+      currentSrcIsOriginal = true;
+      img.style.cursor = "crosshair";
+      break;
+    case "wb_pick":
+      $("btn-pick-wb").classList.add("btn-active");
+      img.style.cursor = "crosshair";
+      break;
+    case "before_after": {
+      $("btn-before-after").classList.add("btn-active");
+      lastResultSrc = img.src;
+      img.src = "/api/preview/orig?" + Date.now();
+      currentSrcIsOriginal = true;
+      break;
+    }
+  }
+  if (mode === "idle") img.style.cursor = "default";
+}
+
+function setMode(newMode) {
+  if (currentMode === newMode) {
+    // Toggle off → go to idle
+    exitMode(currentMode);
+    currentMode = "idle";
+    enterMode("idle");
+    return;
+  }
+  exitMode(currentMode);
+  currentMode = newMode;
+  enterMode(currentMode);
+}
+
 // Centralized state reset — single source of truth for clearing image-dependent state.
 // Called by applyLoadResponse (new image) and Clear button (no image).
 function resetImageState() {
@@ -485,10 +587,13 @@ function resetImageState() {
   cropRectOrig = null;
   hasActiveCrop = false;
   clientOrientation = 0; clientFlipH = false; clientFlipV = false;
-  clientAngleDeg = 0.0; straightenMode = false; straightenPoints = [];
+  clientAngleDeg = 0.0; straightenPoints = [];
   state_currentIndex = 0; currentTotalFiles = 0;
+  requestGeneration++;
   currentSrcIsOriginal = false; lastResultSrc = ""; lastOrigSrc = "";
-  pickingDmin = false; pickingWB = false; cropMode = false; cropDrawing = false;
+  exitMode(currentMode);
+  currentMode = "idle";
+  hideCropOverlays();
   $("btn-pick").classList.remove("btn-active");
   $("btn-pick-wb").classList.remove("btn-active");
   $("btn-crop").classList.remove("btn-active");
@@ -564,17 +669,24 @@ const viewerImg = $("viewer-img");
 // Reposition crop overlay after image loads (coords depend on rendered dimensions)
 img.addEventListener("load", () => {
   // Only show crop overlay if actively in crop mode — not after commit
-  if (cropMode) updateCropOverlay();
-  else { /* hide overlay */ $("mask-top").style.display="none"; $("mask-bottom").style.display="none"; $("mask-left").style.display="none"; $("mask-right").style.display="none"; $("crop-border").style.display="none"; $("crop-info").style.display="none"; }
-  // Sync before/after state after successful load
-  if (img.src.includes("/preview/orig")) {
-    currentSrcIsOriginal = true;
-    $("btn-before-after").classList.add("btn-active");
-    flashStatus("Original (negative)");
-  } else if (img.src.includes("/preview/result")) {
-    currentSrcIsOriginal = false;
-    $("btn-before-after").classList.remove("btn-active");
-    flashStatus("Result");
+  if (currentMode === "crop") updateCropOverlay();
+  else hideCropOverlays();
+  // Sync before/after state — only when explicitly in before_after mode
+  if (currentMode === "before_after") {
+    if (img.src.includes("/preview/orig")) {
+      currentSrcIsOriginal = true;
+      flashStatus("Original (negative)");
+    } else if (img.src.includes("/preview/result")) {
+      currentSrcIsOriginal = false;
+      flashStatus("Result");
+    }
+  } else {
+    // Track src state for non-B/A modes that show orig (crop, dmin_pick)
+    if (img.src.includes("/preview/orig")) {
+      currentSrcIsOriginal = true;
+    } else if (img.src.includes("/preview/result")) {
+      currentSrcIsOriginal = false;
+    }
   }
 });
 
@@ -771,31 +883,8 @@ function doFineRotate(angleDeg) {
   }).catch(e => alert("Rotation failed: " + e));
 }
 
-function hideStraightenOverlay() {
-  $("straighten-overlay").style.display = "none";
-  $("straighten-line").setAttribute("x1", 0);
-  $("straighten-line").setAttribute("y1", 0);
-  $("straighten-line").setAttribute("x2", 0);
-  $("straighten-line").setAttribute("y2", 0);
-  $("straighten-angle-label").style.display = "none";
-}
-
 $("btn-straighten").addEventListener("click", () => {
-  straightenMode = !straightenMode;
-  $("btn-straighten").classList.toggle("btn-active", straightenMode);
-  if (straightenMode) {
-    pickingDmin = false; $("btn-pick").classList.remove("btn-active");
-    pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
-    if (cropMode) exitCropMode();
-    straightenPoints = [];
-    $("straighten-hint").style.display = "block";
-    img.style.cursor = "crosshair";
-  } else {
-    $("straighten-hint").style.display = "none";
-    straightenPoints = [];
-    hideStraightenOverlay();
-    img.style.cursor = "default";
-  }
+  setMode(currentMode === "straighten" ? "idle" : "straighten");
 });
 
 $("btn-clear-rotation").addEventListener("click", () => {
@@ -1232,41 +1321,26 @@ $("btn-invert").addEventListener("click", doInvert);
 
 // Eyedropper (Dmin)
 $("btn-pick").addEventListener("click", () => {
-  pickingDmin = !pickingDmin;
-  if (pickingDmin) {
-    pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
-    if (cropMode) exitCropMode();
-    // Show original negative so user samples from the right image
-    img.src = "/api/preview/orig?" + Date.now();
-    currentSrcIsOriginal = true;
-  } else {
-    // Return to result
-    img.src = "/api/preview/result?" + Date.now();
-    currentSrcIsOriginal = false;
-  }
-  $("btn-pick").classList.toggle("btn-active", pickingDmin);
-  img.style.cursor = (pickingDmin || pickingWB) ? "crosshair" : "default";
+  setMode(currentMode === "dmin_pick" ? "idle" : "dmin_pick");
 });
 
 // Eyedropper (WB)
 $("btn-pick-wb").addEventListener("click", () => {
-  pickingWB = !pickingWB;
-  if (pickingWB) { pickingDmin = false; $("btn-pick").classList.remove("btn-active"); if (cropMode) exitCropMode(); }
-  $("btn-pick-wb").classList.toggle("btn-active", pickingWB);
-  img.style.cursor = (pickingDmin || pickingWB) ? "crosshair" : "default";
+  setMode(currentMode === "wb_pick" ? "idle" : "wb_pick");
 });
 
 img.addEventListener("click", (e) => {
-  if (!pickingDmin && !pickingWB) return;
+  if (currentMode !== "dmin_pick" && currentMode !== "wb_pick") return;
   const rect = img.getBoundingClientRect();
   const scaleX = previewWidth / rect.width;
   const scaleY = previewHeight / rect.height;
   const px = Math.round((e.clientX - rect.left) * scaleX);
   const py = Math.round((e.clientY - rect.top) * scaleY);
   const orig = previewToOriginalCoords(px, py);
+  const gen = requestGeneration;
 
   setLoading(true);
-  if (pickingWB) {
+  if (currentMode === "wb_pick") {
     fetch("/api/pick-wb", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
@@ -1274,6 +1348,7 @@ img.addEventListener("click", (e) => {
     })
     .then(r => r.json())
     .then(data => {
+      if (gen !== requestGeneration) return; // navigated away
       setLoading(false);
       if (data.error) { alert(data.error); return; }
       updateUI(data.params);
@@ -1281,9 +1356,7 @@ img.addEventListener("click", (e) => {
       img.src = "/api/preview/result?" + Date.now();
       if (data.auto_saved) flashStatus("Auto-saved");
       // Auto-exit eyedropper after one pick
-      pickingWB = false;
-      $("btn-pick-wb").classList.remove("btn-active");
-      img.style.cursor = pickingDmin ? "crosshair" : "default";
+      setMode("idle");
     })
     .catch(e => { setLoading(false); alert("WB pick failed: " + e); });
     return;
@@ -1296,6 +1369,7 @@ img.addEventListener("click", (e) => {
   })
   .then(r => r.json())
   .then(data => {
+    if (gen !== requestGeneration) return; // navigated away
     setLoading(false);
     if (data.error) { alert(data.error); return; }
     updateUI(data.params);
@@ -1304,9 +1378,7 @@ img.addEventListener("click", (e) => {
     updateStatus();
     if (data.auto_saved) flashStatus("Auto-saved");
     // Auto-exit eyedropper after one pick
-    pickingDmin = false;
-    $("btn-pick").classList.remove("btn-active");
-    img.style.cursor = pickingWB ? "crosshair" : "default";
+    setMode("idle");
   })
   .catch(e => { setLoading(false); alert("Pick failed: " + e); });
 });
@@ -1409,38 +1481,8 @@ function updateCropOverlay() {
 }
 
 // Crop mode toggle
-function exitCropMode() {
-  cropMode = false;
-  $("btn-crop").classList.remove("btn-active");
-  hasActiveCrop = false;
-  // Hide any crop overlay elements
-  $("mask-top").style.display = "none";
-  $("mask-bottom").style.display = "none";
-  $("mask-left").style.display = "none";
-  $("mask-right").style.display = "none";
-  $("crop-border").style.display = "none";
-  $("crop-info").style.display = "none";
-  const drawEl = $("crop-drawing");
-  drawEl.style.display = "none";
-  drawEl.style.width = "0";
-  drawEl.style.height = "0";
-  // Restore result preview (if inversion hasn't been done, server returns 404 — image stays)
-  img.src = "/api/preview/result?" + Date.now();
-  img.style.cursor = (pickingDmin || pickingWB) ? "crosshair" : "default";
-}
-
 $("btn-crop").addEventListener("click", () => {
-  if (cropMode) { exitCropMode(); return; }
-  cropMode = true;
-  $("btn-crop").classList.add("btn-active");
-  pickingDmin = false; $("btn-pick").classList.remove("btn-active");
-  pickingWB = false; $("btn-pick-wb").classList.remove("btn-active");
-  straightenMode = false; $("btn-straighten").classList.remove("btn-active");
-  $("straighten-hint").style.display = "none";
-  hideStraightenOverlay();
-  // Switch to original preview for correct coordinate mapping
-  img.src = "/api/preview/orig?" + Date.now();
-  img.style.cursor = "crosshair";
+  setMode(currentMode === "crop" ? "idle" : "crop");
 });
 
 // Clear crop
@@ -1467,7 +1509,7 @@ $("btn-clear-crop").addEventListener("click", () => {
 
 // Straighten click handler
 $("viewer").addEventListener("mousedown", (e) => {
-  if (!straightenMode || e.button !== 0) return;
+  if (currentMode !== "straighten" || e.button !== 0) return;
   if (img.style.display === "none") return;
   const imgRect = img.getBoundingClientRect();
   if (e.clientX < imgRect.left || e.clientX > imgRect.right ||
@@ -1490,18 +1532,14 @@ $("viewer").addEventListener("mousedown", (e) => {
     const p2 = straightenPoints[1];
     doStraighten(straightenPoints[0].x, straightenPoints[0].y, p2.x, p2.y);
     // Auto-exit straighten mode
-    straightenMode = false;
-    $("btn-straighten").classList.remove("btn-active");
-    $("straighten-hint").style.display = "none";
-    hideStraightenOverlay();
-    img.style.cursor = "default";
+    setMode("idle");
   }
   e.preventDefault();
 });
 
 // Straighten live line drawing
 $("viewer").addEventListener("mousemove", (e) => {
-  if (!straightenMode || straightenPoints.length !== 1) return;
+  if (currentMode !== "straighten" || straightenPoints.length !== 1) return;
   const vRect = $("viewer").getBoundingClientRect();
   const lx = e.clientX - vRect.left;
   const ly = e.clientY - vRect.top;
@@ -1520,7 +1558,7 @@ $("viewer").addEventListener("mousemove", (e) => {
 
 // Crop drawing via click+drag
 $("viewer").addEventListener("mousedown", (e) => {
-  if (!cropMode || e.button !== 0) return;
+  if (currentMode !== "crop" || e.button !== 0) return;
   if (img.style.display === "none") return;
   // Reject clicks outside the image
   const imgRect = img.getBoundingClientRect();
@@ -1590,6 +1628,7 @@ window.addEventListener("mouseup", (e) => {
 
   hasActiveCrop = true;
   setLoading(true);
+  const gen = requestGeneration;
   fetch("/api/crop", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
@@ -1597,6 +1636,7 @@ window.addEventListener("mouseup", (e) => {
   })
   .then(r => r.json())
   .then(data => {
+    if (gen !== requestGeneration) return; // navigated away
     setLoading(false);
     if (data.error) { alert(data.error); hasActiveCrop = false; return; }
     cropRectOrig = data.crop_rect;
@@ -1607,24 +1647,10 @@ window.addEventListener("mouseup", (e) => {
       previewHeight = data.preview_dims[1];
     }
     // Auto-exit crop mode after successful crop
-    cropMode = false;
-    $("btn-crop").classList.remove("btn-active");
-    img.style.cursor = pickingDmin ? "crosshair" : "default";
-    // Ensure drawing rect is fully reset
-    const drawEl = $("crop-drawing");
-    drawEl.style.display = "none";
-    drawEl.style.width = "0";
-    drawEl.style.height = "0";
-    // Immediately hide crop overlay — don't wait for img.load
-    $("mask-top").style.display = "none";
-    $("mask-bottom").style.display = "none";
-    $("mask-left").style.display = "none";
-    $("mask-right").style.display = "none";
-    $("crop-border").style.display = "none";
-    $("crop-info").style.display = "none";
+    setMode("idle");
     img.src = "/api/preview/result?" + Date.now();
     updateUI(data.params);
-    // Don't show crop overlay after commit — preview already reflects the crop
+    fitToWindow();
     if (data.auto_saved) flashStatus("Auto-saved");
   })
   .catch(e => { setLoading(false); alert("Crop failed: " + e); });
@@ -1714,19 +1740,10 @@ doInvert = function() {
 
 // ---- Before/After toggle ----
 
-function toggleBeforeAfter() {
+$("btn-before-after").addEventListener("click", () => {
   if (!currentFilename) return;
-  if (currentSrcIsOriginal) {
-    if (lastResultSrc) img.src = lastResultSrc;
-    else img.src = "/api/preview/result?" + Date.now();
-    // State updated on load — avoids desync if image fails
-  } else {
-    lastResultSrc = img.src;
-    img.src = "/api/preview/orig?" + Date.now();
-  }
-}
-
-$("btn-before-after").addEventListener("click", toggleBeforeAfter);
+  setMode(currentMode === "before_after" ? "idle" : "before_after");
+});
 
 // Presets
 $("btn-preset-color").addEventListener("click", () => {
@@ -1917,7 +1934,7 @@ $("viewer").addEventListener("wheel", (e) => {
 }, {passive: false});
 
 $("viewer").addEventListener("mousedown", (e) => {
-  if (e.button === 0 && !pickingDmin && !pickingWB && !cropMode) {
+  if (e.button === 0 && currentMode === "idle") {
     isPanning = true;
     lastMouseX = e.clientX; lastMouseY = e.clientY;
     img.style.cursor = "grabbing";
@@ -1933,14 +1950,14 @@ window.addEventListener("mousemove", (e) => {
 window.addEventListener("mouseup", (e) => {
   if (isPanning) {
     isPanning = false;
-    img.style.cursor = (cropMode || pickingDmin || pickingWB) ? "crosshair" : "default";
+    img.style.cursor = currentMode !== "idle" ? "crosshair" : "default";
   }
 });
 // Reset pan on window blur (Alt-Tab, etc.) — otherwise cursor stays "grabbing"
 window.addEventListener("blur", () => {
   if (isPanning) {
     isPanning = false;
-    img.style.cursor = (cropMode || pickingDmin || pickingWB) ? "crosshair" : "default";
+    img.style.cursor = currentMode !== "idle" ? "crosshair" : "default";
   }
 });
 
@@ -2018,7 +2035,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "h" || e.key === "H") {
     toggleHistogram();
   } else if (e.key === "\\") {
-    toggleBeforeAfter();
+    $("btn-before-after").click();
   } else if (e.key === "e" || e.key === "E") {
     $("btn-pick").click();
   } else if (e.key === "w" || e.key === "W") {
@@ -2034,10 +2051,7 @@ document.addEventListener("keydown", (e) => {
   } else if (e.key === "]") {
     doFineRotate(Math.min(15.0, clientAngleDeg + 0.1));
   } else if (e.key === "Escape") {
-    if (pickingDmin) { $("btn-pick").click(); }
-    if (pickingWB) { $("btn-pick-wb").click(); }
-    if (cropMode) { $("btn-crop").click(); }
-    if (straightenMode) { $("btn-straighten").click(); }
+    if (currentMode !== "idle") setMode("idle");
   } else if (e.key === " ") {
     e.preventDefault();
     fitToWindow();
