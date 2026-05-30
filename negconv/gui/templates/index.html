@@ -670,6 +670,14 @@ const viewerImg = $("viewer-img");
 
 // Reposition crop overlay after image loads (coords depend on rendered dimensions)
 img.addEventListener("load", () => {
+  // Sync preview dims when entering crop mode (may differ from previous preview)
+  if (currentMode === "crop" && img.naturalWidth && img.naturalHeight) {
+    if (previewWidth !== img.naturalWidth || previewHeight !== img.naturalHeight) {
+      previewWidth = img.naturalWidth;
+      previewHeight = img.naturalHeight;
+      fitToWindow();
+    }
+  }
   // Only show crop overlay if actively in crop mode — not after commit
   if (currentMode === "crop") updateCropOverlay();
   else hideCropOverlays();

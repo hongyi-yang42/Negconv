@@ -813,7 +813,7 @@ class TestFilmstrip:
         assert data["filename"] == "aaa.tif"
 
     def test_param_carry_no_sidecar(self, tmp_path):
-        """Navigating to a file without sidecar carries tone params and crop."""
+        """Navigating to a file without sidecar carries tone params."""
         p1 = self._make_tiff(tmp_path, "aaa.tif", value=30000)
         p2 = self._make_tiff(tmp_path, "bbb.tif", value=10000)
 
@@ -824,9 +824,8 @@ class TestFilmstrip:
         client.post("/api/load", json={"path": p1})
         # Enable carry via categories
         client.post("/api/carry-categories", json={"tone": True, "wb": True, "film_base": False, "geometry": True})
-        # Set custom gamma and crop
+        # Set custom gamma
         client.post("/api/params", json={"gamma": 6.0})
-        client.post("/api/crop", json={"x": 10, "y": 10, "w": 80, "h": 80})
 
         # Navigate to next file (no sidecar)
         resp = client.post("/api/navigate", json={"direction": "next"})
@@ -835,8 +834,6 @@ class TestFilmstrip:
 
         # Tone params carried
         assert abs(data["params"]["gamma"] - 6.0) < 0.01
-        # Crop carried as template (applied server-side, not returned in overlay)
-        assert data["crop_rect"] is None
         # Dmin re-detected (different pixel values → different Dmin)
         dmin1 = client.get("/api/params").get_json()["dmin"]
         # The Dmin should reflect the new image, not the carried one

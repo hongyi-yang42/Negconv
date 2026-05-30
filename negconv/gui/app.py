@@ -617,8 +617,6 @@ def _apply_carry(state: GuiState, snapshot: dict, categories: dict) -> None:
             val = sp[fname]
             setattr(state.params, fname, val.copy() if isinstance(val, np.ndarray) else val)
 
-    if "crop_rect" in enabled_fields:
-        state.crop_rect = snapshot["crop_rect"]
     if "orientation" in enabled_fields:
         state.orientation = snapshot["orientation"]
     if "flip_h" in enabled_fields:
