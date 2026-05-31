@@ -895,3 +895,72 @@ class TestFilmstrip:
         finally:
             if os.path.isfile(sidecar):
                 os.unlink(sidecar)
+
+    def test_reset_batch(self, tmp_path):
+        """Reset-batch deletes sidecars for specified indices only."""
+        p1 = self._make_tiff(tmp_path, "aaa.tif")
+        p2 = self._make_tiff(tmp_path, "bbb.tif")
+        p3 = self._make_tiff(tmp_path, "ccc.tif")
+
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+
+        # Load directory and create sidecars for all
+        client.post("/api/load", json={"path": p1})
+        client.post("/api/params", json={"gamma": 7.0})
+        client.post("/api/match-params", json={"indices": [0, 1, 2]})
+
+        s1, s2, s3 = _sidecar_path(p1), _sidecar_path(p2), _sidecar_path(p3)
+        try:
+            assert os.path.isfile(s1) and os.path.isfile(s2) and os.path.isfile(s3)
+
+            # Reset only indices 0 and 2
+            resp = client.post("/api/reset-batch", json={"indices": [0, 2]})
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["count"] == 2
+            assert 0 in data["reset"]
+            assert 2 in data["reset"]
+
+            assert not os.path.isfile(s1)  # deleted
+            assert os.path.isfile(s2)       # kept
+            assert not os.path.isfile(s3)   # deleted
+        finally:
+            for s in [s1, s2, s3]:
+                if os.path.isfile(s):
+                    os.unlink(s)
+
+    def test_reset_batch_current_reloads(self, tmp_path):
+        """Reset-batch reloads current file if it was in the reset set."""
+        p1 = self._make_tiff(tmp_path, "aaa.tif")
+        p2 = self._make_tiff(tmp_path, "bbb.tif")
+
+        app = create_app()
+        app.config["TESTING"] = True
+        client = app.test_client()
+
+        client.post("/api/load", json={"path": p1})
+        client.post("/api/params", json={"gamma": 7.0})
+
+        s1 = _sidecar_path(p1)
+        try:
+            # Auto-save so sidecar exists
+            client.post("/api/navigate", json={"direction": "next"})
+            client.post("/api/navigate", json={"index": 0})
+            assert os.path.isfile(s1)
+
+            # Reset current (index 0)
+            resp = client.post("/api/reset-batch", json={"indices": [0]})
+            assert resp.status_code == 200
+            data = resp.get_json()
+            assert data["current_reset"] is True
+            assert not os.path.isfile(s1)
+
+            # Verify gamma reverted (auto-detect, not 7.0)
+            params = client.get("/api/params").get_json()
+            assert abs(params["gamma"] - 7.0) > 0.5
+        finally:
+            if os.path.isfile(s1):
+                os.unlink(s1)
+                os.unlink(sidecar)

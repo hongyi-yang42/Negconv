@@ -24,6 +24,8 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
 #filmstrip .fs-item { display: inline-block; width: 80px; text-align: center; padding: 4px; cursor: pointer; vertical-align: top; border: 2px solid transparent; border-radius: 4px; margin: 2px; }
 #filmstrip .fs-item:hover { background: #2a2a2a; }
 #filmstrip .fs-item.active { border-color: #4a9; }
+#filmstrip .fs-item.selected { border-color: #48f; background: #1a1a3a; }
+#filmstrip .fs-item.selected.active { border-color: #4a9; background: #1a2a1a; }
 #filmstrip .fs-item img { max-width: 72px; max-height: 50px; object-fit: contain; background: #222; }
 #filmstrip .fs-item .fs-name { font-size: 9px; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
 #filmstrip #carry-label { position: absolute; right: 8px; top: 4px; color: #888; font-size: 11px; cursor: pointer; user-select: none; }
@@ -343,6 +345,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; b
     <div style="display:flex;gap:6px;">
       <button class="btn" id="btn-roll-analyze" style="flex:1">Analyze Roll</button>
       <button class="btn" id="btn-match" style="flex:1" title="Apply current params to all files">Match All</button>
+      <button class="btn" id="btn-reset-folder" style="flex:1" title="Reset all files in folder">Reset All</button>
     </div>
     <div id="roll-progress-wrap" style="display:none;margin-top:4px;">
       <div style="background:#333;border-radius:3px;overflow:hidden;height:6px;">
@@ -457,6 +460,8 @@ let panX = 0, panY = 0;
 let isPanning = false;
 let lastMouseX = 0, lastMouseY = 0;
 let debounceTimer = null;
+let selectedIndices = new Set();
+let lastClickedIndex = -1;
 let clientOrientation = 0;
 let clientFlipH = false;
 let clientFlipV = false;
@@ -591,6 +596,7 @@ function resetImageState() {
   clientOrientation = 0; clientFlipH = false; clientFlipV = false;
   clientAngleDeg = 0.0; straightenPoints = [];
   state_currentIndex = 0; currentTotalFiles = 0;
+  selectedIndices.clear(); lastClickedIndex = -1;
   requestGeneration++;
   currentSrcIsOriginal = false; lastResultSrc = ""; lastOrigSrc = "";
   exitMode(currentMode);
@@ -760,8 +766,9 @@ async function loadFilmstrip() {
 
   let html = data.files.map(f => {
     const active = f.index === data.current_index ? ' active' : '';
+    const sel = selectedIndices.has(f.index) ? ' selected' : '';
     const nameColor = f.has_sidecar ? '#4a9' : '#666';
-    return `<div class="fs-item${active}" data-index="${f.index}" onclick="navigateTo(${f.index})" oncontextmenu="showCtxMenu(event,${f.index})">
+    return `<div class="fs-item${active}${sel}" data-index="${f.index}" oncontextmenu="showCtxMenu(event,${f.index})">
       <img loading="lazy" src="/api/thumb/${f.index}" onerror="retryThumb(this,${f.index},0)">
       <div class="fs-name" style="color:${nameColor}">${f.name}</div>
     </div>`;
@@ -772,6 +779,36 @@ async function loadFilmstrip() {
   const current = strip.querySelector(".fs-item.active");
   if (current) current.scrollIntoView({behavior: "smooth", inline: "center", block: "nearest"});
 }
+
+function updateFilmstripSelection() {
+  const items = $("filmstrip").querySelectorAll(".fs-item");
+  items.forEach(el => {
+    const idx = parseInt(el.dataset.index);
+    el.classList.toggle("selected", selectedIndices.has(idx));
+  });
+}
+
+$("filmstrip").addEventListener("click", (e) => {
+  const item = e.target.closest(".fs-item");
+  if (!item) return;
+  const index = parseInt(item.dataset.index);
+
+  if (e.ctrlKey || e.metaKey) {
+    if (selectedIndices.has(index)) selectedIndices.delete(index);
+    else selectedIndices.add(index);
+    lastClickedIndex = index;
+  } else if (e.shiftKey && lastClickedIndex >= 0) {
+    const start = Math.min(lastClickedIndex, index);
+    const end = Math.max(lastClickedIndex, index);
+    for (let i = start; i <= end; i++) selectedIndices.add(i);
+  } else {
+    selectedIndices.clear();
+    navigateTo(index);
+    lastClickedIndex = index;
+    return;
+  }
+  updateFilmstripSelection();
+});
 
 async function navigateTo(index) {
   setLoading(true);
@@ -2196,7 +2233,33 @@ $("btn-match").addEventListener("click", () => {
   .catch(e => alert("Match failed: " + e));
 });
 
-// Border buffer slider
+// Reset All: delete sidecars for all files in folder
+$("btn-reset-folder").addEventListener("click", () => {
+  if (!currentFilename) { flashStatus("No image loaded"); return; }
+  const indices = Array.from({length: currentTotalFiles}, (_, i) => i);
+  if (indices.length < 1) { flashStatus("No files"); return; }
+  if (!confirm(`Reset all ${indices.length} files? This deletes all saved settings.`)) return;
+  setLoading(true);
+  fetch("/api/reset-batch", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({indices}),
+  }).then(r => r.json()).then(data => {
+    setLoading(false);
+    if (data.error) { alert(data.error); return; }
+    // Reload current image (was reset)
+    fetch("/api/navigate", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({index: state_currentIndex}),
+    }).then(r => r.json()).then(s => {
+      applyLoadResponse(s);
+      loadFilmstrip();
+      fetchAndDrawHistogram();
+    });
+    flashStatus("Reset " + data.count + " files");
+  }).catch(e => { setLoading(false); alert("Reset failed: " + e); });
+});
 $("border-buffer").addEventListener("input", (e) => {
   const v = parseInt(e.target.value);
   $("border-buffer-val").textContent = v === 0 ? "auto" : v + "px";
@@ -2600,20 +2663,33 @@ $("chk-highlight").addEventListener("change", () => {
 </script>
 
 <!-- Right-click context menu for filmstrip -->
-<div id="ctx-menu" style="display:none;position:fixed;z-index:2000;background:#222;border:1px solid #555;border-radius:6px;padding:10px 14px;color:#ddd;font-size:0.85em;min-width:180px;">
-  <div style="font-size:0.8em;color:#999;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em;">Copy settings to this frame</div>
-  <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;cursor:pointer;"><input type="checkbox" id="ctx-tone" checked> Tone</label>
-  <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;cursor:pointer;"><input type="checkbox" id="ctx-wb" checked> White Balance</label>
-  <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;cursor:pointer;"><input type="checkbox" id="ctx-film-base"> Film Base</label>
-  <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;"><input type="checkbox" id="ctx-geometry" checked> Geometry</label>
-  <button class="btn btn-primary" id="ctx-apply" style="width:100%;">Apply</button>
+<div id="ctx-menu" style="display:none;position:fixed;z-index:2000;background:#222;border:1px solid #555;border-radius:6px;padding:10px 14px;color:#ddd;font-size:0.85em;min-width:200px;">
+  <div id="ctx-title" style="font-size:0.8em;color:#999;margin-bottom:8px;text-transform:uppercase;letter-spacing:0.05em;"></div>
+  <!-- Copy Settings section -->
+  <div id="ctx-copy-section">
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;cursor:pointer;"><input type="checkbox" id="ctx-tone" checked> Tone</label>
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;cursor:pointer;"><input type="checkbox" id="ctx-wb" checked> White Balance</label>
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:4px;cursor:pointer;"><input type="checkbox" id="ctx-film-base"> Film Base</label>
+    <label style="display:flex;align-items:center;gap:6px;margin-bottom:8px;cursor:pointer;"><input type="checkbox" id="ctx-geometry" checked> Geometry</label>
+    <button class="btn btn-primary" id="ctx-copy" style="width:100%;margin-bottom:6px;">Copy Settings</button>
+  </div>
+  <button class="btn" id="ctx-match" style="width:100%;margin-bottom:4px;">Match Params</button>
+  <button class="btn" id="ctx-reset" style="width:100%;">Reset</button>
 </div>
 <script>
-let ctxTargetIndex = -1;
+let ctxTargetIndices = [];
 
 function showCtxMenu(e, index) {
   e.preventDefault();
-  ctxTargetIndex = index;
+  e.stopPropagation();
+  // Use multi-selection if active, otherwise single target
+  if (selectedIndices.size > 0) {
+    ctxTargetIndices = [...selectedIndices];
+  } else {
+    ctxTargetIndices = [index];
+  }
+  const n = ctxTargetIndices.length;
+  $("ctx-title").textContent = n === 1 ? "1 frame selected" : n + " frames selected";
   const menu = $("ctx-menu");
   menu.style.display = "block";
   menu.style.left = e.clientX + "px";
@@ -2626,36 +2702,104 @@ function showCtxMenu(e, index) {
 
 function hideCtxMenu() {
   $("ctx-menu").style.display = "none";
-  ctxTargetIndex = -1;
+  ctxTargetIndices = [];
 }
 
 document.addEventListener("click", (e) => {
   if (!$("ctx-menu").contains(e.target)) hideCtxMenu();
 });
-// Hide context menu on tab/window switch
 window.addEventListener("blur", hideCtxMenu);
 
-$("ctx-apply").addEventListener("click", () => {
-  if (ctxTargetIndex < 0) return;
+// Copy Settings — loops over targets sequentially
+$("ctx-copy").addEventListener("click", () => {
+  if (!ctxTargetIndices.length) return;
   const cats = {
     tone: $("ctx-tone").checked,
     wb: $("ctx-wb").checked,
     film_base: $("ctx-film-base").checked,
     geometry: $("ctx-geometry").checked,
   };
+  const targets = [...ctxTargetIndices];
+  const originalIndex = state_currentIndex;
   hideCtxMenu();
   setLoading(true);
-  fetch("/api/copy-settings", {
+  (async () => {
+    let lastData = null;
+    for (const idx of targets) {
+      const r = await fetch("/api/copy-settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({target_index: idx, categories: cats}),
+      });
+      const data = await r.json();
+      if (data.error) { setLoading(false); alert("Copy to frame " + idx + " failed: " + data.error); return; }
+      lastData = data;
+    }
+    // Navigate back to original image if we moved
+    if (targets[targets.length - 1] !== originalIndex) {
+      const r = await fetch("/api/navigate", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({index: originalIndex}),
+      });
+      lastData = await r.json();
+    }
+    setLoading(false);
+    if (lastData.error) { alert(lastData.error); return; }
+    applyLoadResponse(lastData);
+    loadFilmstrip();
+    fetchAndDrawHistogram();
+    flashStatus("Copied to " + targets.length + " frames");
+  })().catch(e => { setLoading(false); alert("Copy settings failed: " + e); });
+});
+
+// Match Params — writes sidecars to selected
+$("ctx-match").addEventListener("click", () => {
+  if (!ctxTargetIndices.length) return;
+  const indices = [...ctxTargetIndices];
+  hideCtxMenu();
+  if (!confirm(`Match params to ${indices.length} frames?`)) return;
+  fetch("/api/match-params", {
     method: "POST",
     headers: {"Content-Type": "application/json"},
-    body: JSON.stringify({target_index: ctxTargetIndex, categories: cats}),
+    body: JSON.stringify({indices}),
+  }).then(r => r.json()).then(data => {
+    if (data.error) { alert(data.error); return; }
+    flashStatus("Matched " + data.count + " frames");
+    loadFilmstrip();
+  }).catch(e => alert("Match failed: " + e));
+});
+
+// Reset — deletes sidecars for selected
+$("ctx-reset").addEventListener("click", () => {
+  if (!ctxTargetIndices.length) return;
+  const indices = [...ctxTargetIndices];
+  hideCtxMenu();
+  if (!confirm(`Reset ${indices.length} frames? This deletes their saved settings.`)) return;
+  setLoading(true);
+  fetch("/api/reset-batch", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({indices}),
   }).then(r => r.json()).then(data => {
     setLoading(false);
     if (data.error) { alert(data.error); return; }
-    applyLoadResponse(data);
-    loadFilmstrip();
-    fetchAndDrawHistogram();
-  }).catch(e => { setLoading(false); alert("Copy settings failed: " + e); });
+    if (data.current_reset) {
+      // Current file was reset — navigate to reload
+      fetch("/api/navigate", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({index: state_currentIndex}),
+      }).then(r => r.json()).then(s => {
+        applyLoadResponse(s);
+        loadFilmstrip();
+        fetchAndDrawHistogram();
+      });
+    } else {
+      loadFilmstrip();
+    }
+    flashStatus("Reset " + data.count + " frames");
+  }).catch(e => { setLoading(false); alert("Reset failed: " + e); });
 });
 </script>
 </body>

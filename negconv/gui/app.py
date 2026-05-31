@@ -823,6 +823,44 @@ def create_app() -> Flask:
             "lut": None,
         })
 
+    @app.route("/api/reset-batch", methods=["POST"])
+    def api_reset_batch():
+        """Reset multiple files: delete sidecars, optionally reload current."""
+        data = request.get_json(force=True)
+        indices = data.get("indices", [])
+        if not indices or not state.directory_files:
+            return jsonify({"error": "No indices or directory"}), 400
+        reset = []
+        current_reset = False
+        for idx in indices:
+            if idx < 0 or idx >= len(state.directory_files):
+                continue
+            fp = state.directory_files[idx]
+            sp = _sidecar_path(fp)
+            if os.path.isfile(sp):
+                os.unlink(sp)
+            lsp = _legacy_sidecar_path(fp)
+            if os.path.isfile(lsp):
+                os.unlink(lsp)
+            reset.append(idx)
+            if idx == state.current_index:
+                current_reset = True
+        if current_reset:
+            state.highlight_recovery = DEFAULT_SETTINGS["highlight_recovery"]
+            try:
+                _load_file(state, state.file_path)
+            except Exception as e:
+                return jsonify({"error": f"Failed to reload: {e}"}), 400
+            try:
+                _run_pipeline(state)
+            except Exception as e:
+                return jsonify({"error": f"Inversion failed: {e}"}), 500
+        return jsonify({
+            "reset": reset,
+            "count": len(reset),
+            "current_reset": current_reset,
+        })
+
     # ---- Profile endpoints ----
     @app.route("/api/profiles", methods=["GET"])
     def api_list_profiles():
